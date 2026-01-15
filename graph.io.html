@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <title>graph.io</title>
+  <style>
+    body {
+      margin: 0;
+      overflow: hidden;
+      background: #111;
+    }
+
+    canvas {
+      display: block;
+    }
+  </style>
+</head>
+
+<body>
+  <canvas id="c"></canvas>
+  <script>
+    const canvas = document.getElementById('c');
+    const ctx = canvas.getContext('2d');
+    canvas.width = innerWidth;
+    canvas.height = innerHeight;
+
+    const CAM_SMOOTH = 0.01, ZOOM_SMOOTH = 0.01;
+    const GRID_SIZE = 100, GRID_COLOR = '#222';
+    const MAX_SCREEN_FILL = 0.6, MIN_ZOOM = 0.3, MAX_ZOOM = 1;
+    const HOLD_CLICK_INTERVAL = 1000 / 60;
+    const DOT_RADIUS = 6;
+
+    let myId = null, MAP_W = 3000, MAP_H = 2000, CLICK_RANGE = 200;
+    let dots = [], connections = [];
+    let camX = 0, camY = 0, zoom = 1;
+
+    const colors = {};
+    function getColor(id) {
+      if (!colors[id]) colors[id] = id === myId ? '#00bb00' : `hsl(${(id * 137) % 360}, 70%, 50%)`;
+      return colors[id];
+    }
+
+    const ws = new WebSocket('ws://localhost:8080');
+
+    ws.onmessage = e => {
+      const msg = JSON.parse(e.data);
+      if (msg.type === 'init') { myId = msg.id; MAP_W = msg.MAP_W; MAP_H = msg.MAP_H; CLICK_RANGE = msg.CLICK_RANGE; }
+      else if (msg.type === 'state') { dots = msg.dots; connections = msg.connections; }
+    };
+
+    let mouseDown = false, mouseX = 0, mouseY = 0;
+    canvas.addEventListener('mousedown', e => { mouseDown = true; mouseX = e.clientX; mouseY = e.clientY; });
+    canvas.addEventListener('mouseup', () => mouseDown = false);
+    canvas.addEventListener('mousemove', e => { mouseX = e.clientX; mouseY = e.clientY; });
+    setInterval(() => {
+      if (!mouseDown || !myId) return;
+      const worldX = camX + (mouseX - canvas.width / 2) / zoom;
+      const worldY = camY + (mouseY - canvas.height / 2) / zoom;
+      ws.send(JSON.stringify({ type: 'click', x: worldX, y: worldY }));
+    }, HOLD_CLICK_INTERVAL);
+
+    function render() {
+      const mine = dots.filter(d => d.owner === myId);
+
+      if (mine.length > 0) {
+        const cx = mine.reduce((s, d) => s + d.x, 0) / mine.length;
+        const cy = mine.reduce((s, d) => s + d.y, 0) / mine.length;
+        camX += (cx - camX) * CAM_SMOOTH;
+        camY += (cy - camY) * CAM_SMOOTH;
+
+        const minX = Math.min(...mine.map(d => d.x)), maxX = Math.max(...mine.map(d => d.x));
+        const minY = Math.min(...mine.map(d => d.y)), maxY = Math.max(...mine.map(d => d.y));
+        const bboxW = maxX - minX + 100, bboxH = maxY - minY + 100;
+        const targetZoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM,
+          Math.min(canvas.width * MAX_SCREEN_FILL / bboxW, canvas.height * MAX_SCREEN_FILL / bboxH)));
+        zoom += (targetZoom - zoom) * ZOOM_SMOOTH;
+      }
+
+      ctx.fillStyle = '#111';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      ctx.save();
+      ctx.translate(canvas.width / 2, canvas.height / 2);
+      ctx.scale(zoom, zoom);
+      ctx.translate(-camX, -camY);
+
+      // Grid
+      ctx.strokeStyle = GRID_COLOR;
+      ctx.lineWidth = 1 / zoom;
+      for (let x = 0; x <= MAP_W; x += GRID_SIZE) {
+        ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, MAP_H); ctx.stroke();
+      }
+      for (let y = 0; y <= MAP_H; y += GRID_SIZE) {
+        ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(MAP_W, y); ctx.stroke();
+      }
+
+      // Border
+      ctx.strokeStyle = '#444';
+      ctx.lineWidth = 2 / zoom;
+      ctx.strokeRect(0, 0, MAP_W, MAP_H);
+
+      // Click range areas per player
+      const owners = [...new Set(dots.map(d => d.owner).filter(o => o !== null))];
+      for (const owner of owners) {
+        ctx.fillStyle = getColor(owner) + '15';
+        ctx.beginPath();
+        for (const d of dots.filter(d => d.owner === owner)) {
+          ctx.moveTo(d.x + CLICK_RANGE, d.y);
+          ctx.arc(d.x, d.y, CLICK_RANGE, 0, Math.PI * 2);
+        }
+        ctx.fill();
+      }
+
+      // Connections
+      ctx.lineWidth = 1 / zoom;
+      for (const [i, j] of connections) {
+        const di = dots[i], dj = dots[j];
+        ctx.lineWidth = 1;
+        ctx.strokeStyle = (di.owner === dj.owner && di.owner !== null) ? getColor(di.owner) : '#444';
+        ctx.beginPath(); ctx.moveTo(di.x, di.y); ctx.lineTo(dj.x, dj.y); ctx.stroke();
+      }
+
+      // Dots
+      for (const d of dots) {
+        ctx.fillStyle = d.owner !== null ? getColor(d.owner) : '#888';
+        ctx.beginPath(); ctx.arc(d.x, d.y, DOT_RADIUS, 0, Math.PI * 2); ctx.fill();
+      }
+
+      ctx.restore();
+
+      ctx.fillStyle = '#fff';
+      ctx.font = '20px sans-serif';
+      ctx.fillText(`Score: ${mine.length}`, 10, 30);
+
+      requestAnimationFrame(render);
+    }
+
+    render();
+  </script>
+</body>
+
+</html>
