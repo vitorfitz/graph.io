@@ -1,6 +1,6 @@
 const WebSocket = require('ws');
 
-const MAP_W = 3000, MAP_H = 2000, BASE_DOTS = 300, CONNECT_DIST = 50;
+const MAP_W = 3000, MAP_H = 2000, BASE_DOTS = 300, CONNECT_DIST = 50, DISCONNECT_DIST = 51;
 const SPAWN_DOTS = 5, SPAWN_MARGIN = 200, SPAWN_MIN_DIST = 300, SPAWN_SPREAD = 50;
 const CLICK_RADIUS = 150, CLICK_FORCE = 10, VELOCITY_DECAY = 0.05, CLICK_RANGE = 200;
 const MIN_DOT_VEL = 0.4, MAX_DOT_VEL = 0.8;
@@ -9,6 +9,7 @@ const TICK_RATE = 60;
 
 const dots = [];
 const players = new Map();
+const activeConnections = new Set();
 let nextPlayerId = 1;
 
 for (let i = 0; i < BASE_DOTS; i++) {
@@ -59,7 +60,7 @@ function update() {
     d.repVy *= (1 - REPULSION_DECAY);
   }
 
-  // Repulsion between overlapping dots (linear force)
+  // Repulsion between overlapping dots
   for (let i = 0; i < dots.length; i++) {
     for (let j = i + 1; j < dots.length; j++) {
       const dx = dots[j].x - dots[i].x, dy = dots[j].y - dots[i].y;
@@ -89,12 +90,21 @@ function update() {
   }
 
   const connections = [];
+  const newActiveConnections = new Set();
   for (let i = 0; i < dots.length; i++) {
     for (let j = i + 1; j < dots.length; j++) {
       const dx = dots[i].x - dots[j].x, dy = dots[i].y - dots[j].y;
-      if (dx * dx + dy * dy < CONNECT_DIST * CONNECT_DIST) connections.push([i, j]);
+      const dist2 = dx * dx + dy * dy;
+      const key = `${i},${j}`;
+      const threshold = activeConnections.has(key) ? DISCONNECT_DIST : CONNECT_DIST;
+      if (dist2 < threshold * threshold) {
+        connections.push([i, j]);
+        newActiveConnections.add(key);
+      }
     }
   }
+  activeConnections.clear();
+  for (const k of newActiveConnections) activeConnections.add(k);
 
   const connCount = dots.map(() => ({}));
   for (const [i, j] of connections) {
@@ -106,11 +116,16 @@ function update() {
   for (let i = 0; i < dots.length; i++) {
     const counts = connCount[i];
     const owners = Object.keys(counts).map(Number);
+    const currentOwner = dots[i].owner;
+    const currentCount = counts[currentOwner] || 0;
+
     if (owners.length === 0) {
-      dots[i].owner = null;
+      if (currentCount === 0) dots[i].owner = null;
     } else {
-      const best = owners.reduce((a, b) => counts[a] >= counts[b] ? a : b);
-      if (counts[best] > (counts[dots[i].owner] || 0)) dots[i].owner = best;
+      const best = owners.reduce((a, b) => counts[a] > counts[b] ? a : b);
+      if (best !== currentOwner && counts[best] > currentCount) {
+        dots[i].owner = best;
+      }
     }
   }
 
@@ -136,16 +151,26 @@ function addForce(fOld, fNew) {
   return fOld;
 }
 
-function handleClick(playerId, x, y) {
+function distToSegment(px, py, x1, y1, x2, y2) {
+  const dx = x2 - x1, dy = y2 - y1;
+  const len2 = dx * dx + dy * dy;
+  if (len2 === 0) return Math.hypot(px - x1, py - y1);
+  const t = Math.max(0, Math.min(1, ((px - x1) * dx + (py - y1) * dy) / len2));
+  return Math.hypot(px - (x1 + t * dx), py - (y1 + t * dy));
+}
+
+function handleClick(playerId, x, y, px, py) {
   const myDots = dots.filter(d => d.owner === playerId);
   if (!myDots.some(d => Math.hypot(d.x - x, d.y - y) < CLICK_RANGE)) return;
   for (const d of dots) {
-    const dx = d.x - x, dy = d.y - y;
-    const dist = Math.hypot(dx, dy);
+    const dist = (px !== undefined) ? distToSegment(d.x, d.y, px, py, x, y) : Math.hypot(d.x - x, d.y - y);
     if (dist < CLICK_RADIUS && dist > 0) {
+      const dx = d.x - x, dy = d.y - y;
+      const distToEnd = Math.hypot(dx, dy);
+      if (distToEnd === 0) continue;
       const force = (1 - dist / CLICK_RADIUS) * CLICK_FORCE;
-      const fx = (dx / dist) * force;
-      const fy = (dy / dist) * force;
+      const fx = (dx / distToEnd) * force;
+      const fy = (dy / distToEnd) * force;
       d.clickVx = addForce(d.clickVx, fx);
       d.clickVy = addForce(d.clickVy, fy);
     }
@@ -167,7 +192,7 @@ wss.on('connection', ws => {
   ws.send(JSON.stringify({ type: 'init', id, MAP_W, MAP_H, CLICK_RANGE }));
   ws.on('message', data => {
     const msg = JSON.parse(data);
-    if (msg.type === 'click') handleClick(id, msg.x, msg.y);
+    if (msg.type === 'click') handleClick(id, msg.x, msg.y, msg.px, msg.py);
   });
   ws.on('close', () => removePlayer(id));
 });

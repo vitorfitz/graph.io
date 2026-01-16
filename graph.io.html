@@ -24,20 +24,33 @@
     canvas.width = innerWidth;
     canvas.height = innerHeight;
 
+    window.addEventListener('resize', () => {
+      canvas.width = innerWidth;
+      canvas.height = innerHeight;
+    });
+
     const CAM_SMOOTH = 0.03, ZOOM_SMOOTH = 0.01;
     const GRID_SIZE = 100, GRID_COLOR = '#222';
+    const UNCLAIMED_COLOR = "#888";
     const MAX_SCREEN_FILL = 0.6, MIN_ZOOM = 0.3, MAX_ZOOM = 1;
     const HOLD_CLICK_INTERVAL = 1000 / 60;
     const DOT_RADIUS = 6;
 
     let myId = null, MAP_W = 3000, MAP_H = 2000, CLICK_RANGE = 200;
     let dots = [], connections = [];
-    let camX = 0, camY = 0, zoom = 1;
+    let camX = 0, camY = 0, zoom = 1, camInitialized = false;
 
     const colors = {};
-    function getColor(id) {
-      if (!colors[id]) colors[id] = id === myId ? '#00bb00' : `hsl(${(id * 137) % 360}, 70%, 50%)`;
-      return colors[id];
+    function getColor(id, alpha = 1) {
+      if (!colors[id]) {
+        if (id === myId) {
+          colors[id] = '0, 187, 0';
+        } else {
+          const hue = ((id * 173) % 280) + 160;
+          colors[id] = `${hue}, 70%, 50%`;
+        }
+      }
+      return id === myId ? `rgba(${colors[id]}, ${alpha})` : `hsla(${colors[id]}, ${alpha})`;
     }
 
     const ws = new WebSocket('ws://localhost:8080');
@@ -48,15 +61,25 @@
       else if (msg.type === 'state') { dots = msg.dots; connections = msg.connections; }
     };
 
-    let mouseDown = false, mouseX = 0, mouseY = 0;
-    canvas.addEventListener('mousedown', e => { mouseDown = true; mouseX = e.clientX; mouseY = e.clientY; });
-    canvas.addEventListener('mouseup', () => mouseDown = false);
+    let mouseDown = false, autoClick = false, mouseX = 0, mouseY = 0, lastClickX = null, lastClickY = null;
+    canvas.addEventListener('mousedown', e => { mouseDown = true; mouseX = e.clientX; mouseY = e.clientY; lastClickX = null; });
+    canvas.addEventListener('mouseup', () => { mouseDown = false; lastClickX = null; });
     canvas.addEventListener('mousemove', e => { mouseX = e.clientX; mouseY = e.clientY; });
+    window.addEventListener('keydown', e => { if (e.code === 'Space') { e.preventDefault(); autoClick = !autoClick; lastClickX = null; } });
     setInterval(() => {
-      if (!mouseDown || !myId) return;
+      if ((!mouseDown && !autoClick) || !myId) {
+        lastClickX = null;
+        lastClickY = null;
+        return;
+      }
       const worldX = camX + (mouseX - canvas.width / 2) / zoom;
       const worldY = camY + (mouseY - canvas.height / 2) / zoom;
-      ws.send(JSON.stringify({ type: 'click', x: worldX, y: worldY }));
+      if (lastClickX !== null) {
+        ws.send(JSON.stringify({ type: 'click', x: worldX, y: worldY, px: lastClickX, py: lastClickY }));
+      } else {
+        ws.send(JSON.stringify({ type: 'click', x: worldX, y: worldY }));
+      }
+      lastClickX = worldX; lastClickY = worldY;
     }, HOLD_CLICK_INTERVAL);
 
     function render() {
@@ -65,8 +88,12 @@
       if (mine.length > 0) {
         const cx = mine.reduce((s, d) => s + d.x, 0) / mine.length;
         const cy = mine.reduce((s, d) => s + d.y, 0) / mine.length;
-        camX += (cx - camX) * CAM_SMOOTH;
-        camY += (cy - camY) * CAM_SMOOTH;
+        if (!camInitialized) {
+          camX = cx; camY = cy; camInitialized = true;
+        } else {
+          camX += (cx - camX) * CAM_SMOOTH;
+          camY += (cy - camY) * CAM_SMOOTH;
+        }
 
         const minX = Math.min(...mine.map(d => d.x)), maxX = Math.max(...mine.map(d => d.x));
         const minY = Math.min(...mine.map(d => d.y)), maxY = Math.max(...mine.map(d => d.y));
@@ -102,7 +129,7 @@
       // Click range areas per player
       const owners = [...new Set(dots.map(d => d.owner).filter(o => o !== null))];
       for (const owner of owners) {
-        ctx.fillStyle = getColor(owner) + '15';
+        ctx.fillStyle = getColor(owner, 0.15);
         ctx.beginPath();
         for (const d of dots.filter(d => d.owner === owner)) {
           ctx.moveTo(d.x + CLICK_RANGE, d.y);
@@ -116,13 +143,13 @@
       for (const [i, j] of connections) {
         const di = dots[i], dj = dots[j];
         ctx.lineWidth = 1;
-        ctx.strokeStyle = (di.owner === dj.owner && di.owner !== null) ? getColor(di.owner) : '#444';
+        ctx.strokeStyle = (di.owner === dj.owner && di.owner !== null) ? getColor(di.owner) : UNCLAIMED_COLOR;
         ctx.beginPath(); ctx.moveTo(di.x, di.y); ctx.lineTo(dj.x, dj.y); ctx.stroke();
       }
 
       // Dots
       for (const d of dots) {
-        ctx.fillStyle = d.owner !== null ? getColor(d.owner) : '#888';
+        ctx.fillStyle = d.owner !== null ? getColor(d.owner) : UNCLAIMED_COLOR;
         ctx.beginPath(); ctx.arc(d.x, d.y, DOT_RADIUS, 0, Math.PI * 2); ctx.fill();
       }
 
