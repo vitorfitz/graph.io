@@ -1,7 +1,7 @@
 const WebSocket = require('ws');
 
-const MAP_W = 3000, MAP_H = 2000, DOT_DENSITY = 1 / 20000, BASE_DOTS = MAP_W * MAP_H * DOT_DENSITY;
-const CONNECT_DIST = 50, DISCONNECT_DIST = 51;
+const MAP_W = 3000, MAP_H = 3000, DOT_DENSITY = 1 / 20000, BASE_DOTS = MAP_W * MAP_H * DOT_DENSITY;
+const CONNECT_DIST = 50, DISCONNECT_DIST = 50;
 const SPAWN_DOTS = 5, SPAWN_MARGIN = 200, SPAWN_MIN_DIST = 300, SPAWN_SPREAD = 50;
 const CLICK_RADIUS = 150, CLICK_FORCE = 10, VELOCITY_DECAY = 0.05, CLICK_RANGE = 200;
 const MIN_DOT_VEL = 0.4, MAX_DOT_VEL = 0.8;
@@ -12,6 +12,7 @@ const dots = [];
 const players = new Map();
 const activeConnections = new Set();
 let nextPlayerId = 1;
+let currentTick = 0;
 
 // Spatial hashing
 const CELL_SIZE = DISCONNECT_DIST;
@@ -64,7 +65,7 @@ for (let i = 0; i < BASE_DOTS; i++) {
 function createDot(x, y) {
   const theta = 2 * Math.PI * Math.random();
   const vel = MIN_DOT_VEL + Math.random() * (MAX_DOT_VEL - MIN_DOT_VEL);
-  return { x, y, baseVx: vel * Math.cos(theta), baseVy: vel * Math.sin(theta), clickVx: 0, clickVy: 0, repVx: 0, repVy: 0, owner: null };
+  return { x, y, baseVx: vel * Math.cos(theta), baseVy: vel * Math.sin(theta), clickVx: 0, clickVy: 0, repVx: 0, repVy: 0, owner: null, claimTick: 0 };
 }
 
 function findSpawnPoint() {
@@ -94,11 +95,12 @@ function removePlayer(id) {
 
 function getRepulsion(dist) {
   let f = 0;
-  if (dist < 50) f += Math.min((100 / dist ** 2), 10);
+  if (dist < 49) f += Math.min((100 / dist ** 2), 10);
   return f;
 }
 
 function update() {
+  currentTick++;
   rebuildGrid();
 
   // Decay and accumulate repulsion
@@ -154,8 +156,8 @@ function update() {
   const connCount = dots.map(() => ({}));
   for (const [i, j] of connections) {
     const oi = dots[i].owner, oj = dots[j].owner;
-    if (oi !== null) connCount[j][oi] = (connCount[j][oi] || 0) + 1;
-    if (oj !== null) connCount[i][oj] = (connCount[i][oj] || 0) + 1;
+    if (oi !== null && dots[i].claimTick < currentTick) connCount[j][oi] = (connCount[j][oi] || 0) + 1;
+    if (oj !== null && dots[j].claimTick < currentTick) connCount[i][oj] = (connCount[i][oj] || 0) + 1;
   }
 
   const newOwners = dots.map((d, i) => {
@@ -175,7 +177,10 @@ function update() {
     return winners[0];
   });
 
-  for (let i = 0; i < dots.length; i++) dots[i].owner = newOwners[i];
+  for (let i = 0; i < dots.length; i++) {
+    if (newOwners[i] !== dots[i].owner) dots[i].claimTick = currentTick;
+    dots[i].owner = newOwners[i];
+  }
 
   for (const [id] of players) {
     if (!dots.some(d => d.owner === id)) respawnPlayer(id);
