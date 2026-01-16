@@ -3,6 +3,5 @@
 `node server.js`
 
 ## TODO:
-- Quadtree / spatial hashing
 - Score graph?
 - Special dots?

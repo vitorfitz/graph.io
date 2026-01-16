@@ -1,6 +1,7 @@
 const WebSocket = require('ws');
 
-const MAP_W = 3000, MAP_H = 2000, BASE_DOTS = 300, CONNECT_DIST = 50, DISCONNECT_DIST = 51;
+const MAP_W = 3000, MAP_H = 2000, DOT_DENSITY = 1 / 20000, BASE_DOTS = MAP_W * MAP_H * DOT_DENSITY;
+const CONNECT_DIST = 50, DISCONNECT_DIST = 51;
 const SPAWN_DOTS = 5, SPAWN_MARGIN = 200, SPAWN_MIN_DIST = 300, SPAWN_SPREAD = 50;
 const CLICK_RADIUS = 150, CLICK_FORCE = 10, VELOCITY_DECAY = 0.05, CLICK_RANGE = 200;
 const MIN_DOT_VEL = 0.4, MAX_DOT_VEL = 0.8;
@@ -11,6 +12,50 @@ const dots = [];
 const players = new Map();
 const activeConnections = new Set();
 let nextPlayerId = 1;
+
+// Spatial hashing
+const CELL_SIZE = 60; // Slightly larger than DISCONNECT_DIST
+const GRID_W = Math.ceil(MAP_W / CELL_SIZE);
+const GRID_H = Math.ceil(MAP_H / CELL_SIZE);
+let grid = [];
+
+function rebuildGrid() {
+  grid = Array.from({ length: GRID_W * GRID_H }, () => []);
+  for (let i = 0; i < dots.length; i++) {
+    const cx = Math.floor(dots[i].x / CELL_SIZE);
+    const cy = Math.floor(dots[i].y / CELL_SIZE);
+    if (cx >= 0 && cx < GRID_W && cy >= 0 && cy < GRID_H) {
+      grid[cy * GRID_W + cx].push(i);
+    }
+  }
+}
+
+function* getNearbyPairs() {
+  for (let cy = 0; cy < GRID_H; cy++) {
+    for (let cx = 0; cx < GRID_W; cx++) {
+      const cell = grid[cy * GRID_W + cx];
+      // Pairs within same cell
+      for (let a = 0; a < cell.length; a++) {
+        for (let b = a + 1; b < cell.length; b++) {
+          yield [cell[a], cell[b]];
+        }
+      }
+      // Pairs with neighboring cells (right, bottom-left, bottom, bottom-right)
+      const neighbors = [[1, 0], [-1, 1], [0, 1], [1, 1]];
+      for (const [dx, dy] of neighbors) {
+        const nx = cx + dx, ny = cy + dy;
+        if (nx >= 0 && nx < GRID_W && ny >= 0 && ny < GRID_H) {
+          const neighbor = grid[ny * GRID_W + nx];
+          for (const i of cell) {
+            for (const j of neighbor) {
+              yield [Math.min(i, j), Math.max(i, j)];
+            }
+          }
+        }
+      }
+    }
+  }
+}
 
 for (let i = 0; i < BASE_DOTS; i++) {
   dots.push(createDot(Math.random() * MAP_W, Math.random() * MAP_H));
@@ -54,23 +99,23 @@ function getRepulsion(dist) {
 }
 
 function update() {
+  rebuildGrid();
+
   // Decay and accumulate repulsion
   for (const d of dots) {
     d.repVx *= (1 - REPULSION_DECAY);
     d.repVy *= (1 - REPULSION_DECAY);
   }
 
-  // Repulsion between overlapping dots
-  for (let i = 0; i < dots.length; i++) {
-    for (let j = i + 1; j < dots.length; j++) {
-      const dx = dots[j].x - dots[i].x, dy = dots[j].y - dots[i].y;
-      const dist = Math.hypot(dx, dy);
-      const force = getRepulsion(dist);
-      if (force > 0) {
-        const fx = (dx / dist) * force, fy = (dy / dist) * force;
-        dots[i].repVx -= fx; dots[i].repVy -= fy;
-        dots[j].repVx += fx; dots[j].repVy += fy;
-      }
+  // Repulsion between nearby dots (using spatial hash)
+  for (const [i, j] of getNearbyPairs()) {
+    const dx = dots[j].x - dots[i].x, dy = dots[j].y - dots[i].y;
+    const dist = Math.hypot(dx, dy);
+    const force = getRepulsion(dist);
+    if (force > 0) {
+      const fx = (dx / dist) * force, fy = (dy / dist) * force;
+      dots[i].repVx -= fx; dots[i].repVy -= fy;
+      dots[j].repVx += fx; dots[j].repVy += fy;
     }
   }
 
@@ -89,18 +134,18 @@ function update() {
     }
   }
 
+  rebuildGrid(); // Rebuild after position updates
+
   const connections = [];
   const newActiveConnections = new Set();
-  for (let i = 0; i < dots.length; i++) {
-    for (let j = i + 1; j < dots.length; j++) {
-      const dx = dots[i].x - dots[j].x, dy = dots[i].y - dots[j].y;
-      const dist2 = dx * dx + dy * dy;
-      const key = `${i},${j}`;
-      const threshold = activeConnections.has(key) ? DISCONNECT_DIST : CONNECT_DIST;
-      if (dist2 < threshold * threshold) {
-        connections.push([i, j]);
-        newActiveConnections.add(key);
-      }
+  for (const [i, j] of getNearbyPairs()) {
+    const dx = dots[i].x - dots[j].x, dy = dots[i].y - dots[j].y;
+    const dist2 = dx * dx + dy * dy;
+    const key = `${i},${j}`;
+    const threshold = activeConnections.has(key) ? DISCONNECT_DIST : CONNECT_DIST;
+    if (dist2 < threshold * threshold) {
+      connections.push([i, j]);
+      newActiveConnections.add(key);
     }
   }
   activeConnections.clear();
