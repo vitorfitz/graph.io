@@ -156,8 +156,8 @@ function update() {
   const connCount = dots.map(() => ({}));
   for (const [i, j] of connections) {
     const oi = dots[i].owner, oj = dots[j].owner;
-    if (oi !== null && dots[i].claimTick < currentTick) connCount[j][oi] = (connCount[j][oi] || 0) + 1;
-    if (oj !== null && dots[j].claimTick < currentTick) connCount[i][oj] = (connCount[i][oj] || 0) + 1;
+    if (oi !== null && dots[i].claimTick < currentTick - 1) connCount[j][oi] = (connCount[j][oi] || 0) + 1;
+    if (oj !== null && dots[j].claimTick < currentTick - 1) connCount[i][oj] = (connCount[i][oj] || 0) + 1;
   }
 
   const newOwners = dots.map((d, i) => {
@@ -198,7 +198,10 @@ function respawnPlayer(id) {
 }
 
 function addForce(fOld, fNew) {
-  if (Math.sign(fOld) != Math.sign(fNew) || Math.abs(fNew) > Math.abs(fOld)) {
+  if (Math.sign(fOld) != Math.sign(fNew)) {
+    return fOld + fNew;
+  }
+  if (Math.abs(fNew) > Math.abs(fOld)) {
     return fNew;
   }
   return fOld;
