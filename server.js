@@ -14,7 +14,7 @@ const activeConnections = new Set();
 let nextPlayerId = 1;
 
 // Spatial hashing
-const CELL_SIZE = 60; // Slightly larger than DISCONNECT_DIST
+const CELL_SIZE = DISCONNECT_DIST;
 const GRID_W = Math.ceil(MAP_W / CELL_SIZE);
 const GRID_H = Math.ceil(MAP_H / CELL_SIZE);
 let grid = [];
@@ -158,21 +158,24 @@ function update() {
     if (oj !== null) connCount[i][oj] = (connCount[i][oj] || 0) + 1;
   }
 
-  for (let i = 0; i < dots.length; i++) {
+  const newOwners = dots.map((d, i) => {
     const counts = connCount[i];
     const owners = Object.keys(counts).map(Number);
-    const currentOwner = dots[i].owner;
+    const currentOwner = d.owner;
     const currentCount = counts[currentOwner] || 0;
 
-    if (owners.length === 0) {
-      if (currentCount === 0) dots[i].owner = null;
-    } else {
-      const best = owners.reduce((a, b) => counts[a] > counts[b] ? a : b);
-      if (best !== currentOwner && counts[best] > currentCount) {
-        dots[i].owner = best;
-      }
-    }
-  }
+    if (owners.length === 0) return currentCount === 0 ? null : currentOwner;
+
+    const maxCount = Math.max(...Object.values(counts));
+    if (maxCount <= currentCount) return currentOwner;
+
+    const winners = owners.filter(o => counts[o] === maxCount);
+    if (winners.length > 1) return currentOwner; // Tie - no change
+
+    return winners[0];
+  });
+
+  for (let i = 0; i < dots.length; i++) dots[i].owner = newOwners[i];
 
   for (const [id] of players) {
     if (!dots.some(d => d.owner === id)) respawnPlayer(id);
@@ -196,28 +199,29 @@ function addForce(fOld, fNew) {
   return fOld;
 }
 
-function distToSegment(px, py, x1, y1, x2, y2) {
+function closestPointOnSegment(px, py, x1, y1, x2, y2) {
   const dx = x2 - x1, dy = y2 - y1;
   const len2 = dx * dx + dy * dy;
-  if (len2 === 0) return Math.hypot(px - x1, py - y1);
+  if (len2 === 0) return { x: x1, y: y1 };
   const t = Math.max(0, Math.min(1, ((px - x1) * dx + (py - y1) * dy) / len2));
-  return Math.hypot(px - (x1 + t * dx), py - (y1 + t * dy));
+  return { x: x1 + t * dx, y: y1 + t * dy };
 }
 
 function handleClick(playerId, x, y, px, py) {
   const myDots = dots.filter(d => d.owner === playerId);
   if (!myDots.some(d => Math.hypot(d.x - x, d.y - y) < CLICK_RANGE)) return;
   for (const d of dots) {
-    const dist = (px !== undefined) ? distToSegment(d.x, d.y, px, py, x, y) : Math.hypot(d.x - x, d.y - y);
+    let cx = x, cy = y;
+    if (px !== undefined) {
+      const closest = closestPointOnSegment(d.x, d.y, px, py, x, y);
+      cx = closest.x; cy = closest.y;
+    }
+    const dx = d.x - cx, dy = d.y - cy;
+    const dist = Math.hypot(dx, dy);
     if (dist < CLICK_RADIUS && dist > 0) {
-      const dx = d.x - x, dy = d.y - y;
-      const distToEnd = Math.hypot(dx, dy);
-      if (distToEnd === 0) continue;
       const force = (1 - dist / CLICK_RADIUS) * CLICK_FORCE;
-      const fx = (dx / distToEnd) * force;
-      const fy = (dy / distToEnd) * force;
-      d.clickVx = addForce(d.clickVx, fx);
-      d.clickVy = addForce(d.clickVy, fy);
+      d.clickVx = addForce(d.clickVx, (dx / dist) * force);
+      d.clickVy = addForce(d.clickVy, (dy / dist) * force);
     }
   }
 }
