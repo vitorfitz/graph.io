@@ -71,38 +71,264 @@
       return dots.some(d => d.owner === myId && Math.hypot(d.x - x, d.y - y) < CLICK_RANGE);
     }
 
+    function clampToRange(x, y) {
+      if (isInRange(x, y)) return { x, y };
+      let best = null, bestDist = Infinity;
+      for (const d of dots) {
+        if (d.owner !== myId) continue;
+        const dist = Math.hypot(d.x - x, d.y - y);
+        const edgeDist = dist - CLICK_RANGE;
+        if (edgeDist < bestDist) {
+          bestDist = edgeDist;
+          const t = (CLICK_RANGE - 1) / dist;
+          best = { x: d.x + (x - d.x) * t, y: d.y + (y - d.y) * t };
+        }
+      }
+      return best;
+    }
+
     function addClickEffect(x, y, stam) {
       if (!isInRange(x, y)) return;
       const t = stam / 100;
       clickEffects.push({ x, y, radius: 0, maxRadius: 20 + 80 * t, alpha: 0.1 + 0.4 * t, hue: 120, birth: Date.now() });
     }
 
-    let currentTrail = null;
+    let currentTrail = null, lastTrailX = null, lastTrailY = null, wasInRange = false;
+    const TRAIL_MIN_DIST = 5;
     function addToTrail(x, y, stam) {
-      if (!isInRange(x, y)) return;
+      const inRange = isInRange(x, y);
+      if (!inRange) {
+        currentTrail = null;
+        lastTrailX = null;
+        lastTrailY = null;
+        wasInRange = false;
+        return;
+      }
+      if (!wasInRange) {
+        lastTrailX = x; lastTrailY = y;
+        wasInRange = true;
+        return;
+      }
+
       if (!currentTrail) {
-        currentTrail = { points: [], birth: Date.now() };
+        if (Math.hypot(x - lastTrailX, y - lastTrailY) < TRAIL_MIN_DIST) {
+          lastTrailX = x; lastTrailY = y;
+          return;
+        }
+        currentTrail = { points: [{ x: lastTrailX, y: lastTrailY, t: Date.now(), stam }], birth: Date.now() };
         dragTrails.push(currentTrail);
       }
       currentTrail.points.push({ x, y, t: Date.now(), stam });
+      if (currentTrail.points.length > 1) { lastTrailX = x; lastTrailY = y; }
     }
 
-    canvas.addEventListener('mousedown', e => { mouseDown = true; mouseX = e.clientX; mouseY = e.clientY; lastClickX = null; });
-    canvas.addEventListener('mouseup', () => { mouseDown = false; lastClickX = null; currentTrail = null; });
+    // WebGL setup for trails (uses gl.MAX blend to avoid overlap artifacts)
+    const glCanvas = document.createElement('canvas');
+    glCanvas.style.cssText = 'position:absolute;top:0;left:0;pointer-events:none';
+    document.body.appendChild(glCanvas);
+    const gl = glCanvas.getContext('webgl2');
+
+    const vs = `
+      attribute vec2 pos;
+      uniform vec2 res, cam;
+      uniform float zoom;
+      void main() {
+        vec2 p = (pos - cam) * zoom + res * 0.5;
+        gl_Position = vec4(p / res * 2.0 - 1.0, 0, 1);
+        gl_Position.y *= -1.0;
+      }
+    `;
+    const fs = `
+      precision mediump float;
+      uniform vec4 color;
+      void main() { gl_FragColor = color; }
+    `;
+
+    function compileShader(src, type) {
+      const s = gl.createShader(type);
+      gl.shaderSource(s, src);
+      gl.compileShader(s);
+      return s;
+    }
+
+    const prog = gl.createProgram();
+    gl.attachShader(prog, compileShader(vs, gl.VERTEX_SHADER));
+    gl.attachShader(prog, compileShader(fs, gl.FRAGMENT_SHADER));
+    gl.linkProgram(prog);
+    gl.useProgram(prog);
+
+    const posLoc = gl.getAttribLocation(prog, 'pos');
+    const resLoc = gl.getUniformLocation(prog, 'res');
+    const camLoc = gl.getUniformLocation(prog, 'cam');
+    const zoomLoc = gl.getUniformLocation(prog, 'zoom');
+    const colorLoc = gl.getUniformLocation(prog, 'color');
+
+    const buf = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+    gl.enableVertexAttribArray(posLoc);
+    gl.vertexAttribPointer(posLoc, 2, gl.FLOAT, false, 0, 0);
+
+    gl.enable(gl.BLEND);
+    gl.blendEquation(gl.MAX);
+    gl.blendFunc(gl.ONE, gl.ONE);
+
+    function resizeGL() {
+      glCanvas.width = innerWidth;
+      glCanvas.height = innerHeight;
+      gl.viewport(0, 0, glCanvas.width, glCanvas.height);
+    }
+    resizeGL();
+    addEventListener('resize', resizeGL);
+
+    function dist(a, b) {
+      return Math.hypot(b.x - a.x, b.y - a.y);
+    }
+
+    function lerp(a, b, t) {
+      return {
+        x: a.x + (b.x - a.x) * t,
+        y: a.y + (b.y - a.y) * t
+      };
+    }
+
+    function catmullRomCentripetal(p0, p1, p2, p3, t) {
+      const alpha = 0.5;
+
+      const t0 = 0;
+      const t1 = t0 + Math.pow(dist(p0, p1), alpha);
+      const t2 = t1 + Math.pow(dist(p1, p2), alpha);
+      const t3 = t2 + Math.pow(dist(p2, p3), alpha);
+
+      // remap t from [0,1] → [t1,t2]
+      const tt = t1 + (t2 - t1) * t;
+
+      const A1 = lerp(p0, p1, (tt - t0) / (t1 - t0));
+      const A2 = lerp(p1, p2, (tt - t1) / (t2 - t1));
+      const A3 = lerp(p2, p3, (tt - t2) / (t3 - t2));
+
+      const B1 = lerp(A1, A2, (tt - t0) / (t2 - t0));
+      const B2 = lerp(A2, A3, (tt - t1) / (t3 - t1));
+
+      const C = lerp(B1, B2, (tt - t1) / (t2 - t1));
+
+      return C;
+    }
+
+    function catmullRomTangent(p0, p1, p2, p3, t) {
+      const eps = 0.001;
+
+      const pA = catmullRomCentripetal(p0, p1, p2, p3, Math.max(0, t - eps));
+      const pB = catmullRomCentripetal(p0, p1, p2, p3, Math.min(1, t + eps));
+
+      const dx = pB.x - pA.x;
+      const dy = pB.y - pA.y;
+      const len = Math.hypot(dx, dy) || 1;
+
+      return { x: dx / len, y: dy / len };
+    }
+
+    function normalFromTangent(t) {
+      return { x: -t.y, y: t.x };
+    }
+
+    function renderTrailsGL() {
+      gl.clearColor(0, 0, 0, 0);
+      gl.clear(gl.COLOR_BUFFER_BIT);
+
+      gl.uniform2f(resLoc, glCanvas.width, glCanvas.height);
+      gl.uniform2f(camLoc, camX, camY);
+      gl.uniform1f(zoomLoc, zoom);
+
+      const now = Date.now();
+      const maxAge = 800;
+      const STEPS = 12;
+
+      for (let i = dragTrails.length - 1; i >= 0; i--) {
+        const trail = dragTrails[i];
+        const pts = trail.points;
+        if (pts.length < 2) continue;
+
+        // Create phantom endpoints for smooth start/end
+        const last = pts.length - 1;
+        const p0 = { x: 2 * pts[0].x - pts[1].x, y: 2 * pts[0].y - pts[1].y, t: pts[0].t, stam: pts[0].stam };
+        const pN = { x: 2 * pts[last].x - pts[last - 1].x, y: 2 * pts[last].y - pts[last - 1].y, t: pts[last].t, stam: pts[last].stam };
+        const extended = [p0, ...pts, pN];
+
+        for (let j = 1; j < extended.length - 2; j++) {
+          const p0 = extended[j - 1];
+          const p1 = extended[j];
+          const p2 = extended[j + 1];
+          const p3 = extended[j + 2];
+
+          const age = now - p1.t;
+          const fade = Math.max(0, 1 - age / maxAge);
+          if (fade <= 0) continue;
+
+          const s = p1.stam / 100;
+          const alpha = (0.1 + 0.4 * s) * fade;
+          const halfWidth = (4 + 16 * s) * fade * 0.5;
+
+          const verts = [];
+
+          for (let k = 0; k <= STEPS; k++) {
+            const t = k / STEPS;
+
+            const pos = catmullRomCentripetal(p0, p1, p2, p3, t);
+            const tan = catmullRomTangent(p0, p1, p2, p3, t);
+            const nrm = normalFromTangent(tan);
+
+            const nx = nrm.x * halfWidth;
+            const ny = nrm.y * halfWidth;
+
+            // left
+            verts.push(
+              pos.x + nx, pos.y + ny,
+              pos.x - nx, pos.y - ny
+            );
+          }
+
+          gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(verts), gl.DYNAMIC_DRAW);
+          gl.uniform4f(colorLoc, 0.2 * alpha, 1.0 * alpha, 0.2 * alpha, alpha);
+          gl.drawArrays(gl.TRIANGLE_STRIP, 0, verts.length / 2);
+        }
+
+        if (now - pts[pts.length - 1].t > maxAge) {
+          dragTrails.splice(i, 1);
+        }
+      }
+    }
+
+    addEventListener('mousedown', e => { mouseDown = true; mouseX = e.clientX; mouseY = e.clientY; lastClickX = null; });
+    addEventListener('mouseup', () => { mouseDown = false; lastClickX = null; currentTrail = null; lastTrailX = null; lastTrailY = null; wasInRange = false; });
     canvas.addEventListener('mousemove', e => { mouseX = e.clientX; mouseY = e.clientY; });
     setInterval(() => {
       if (!mouseDown || !myId) {
         lastClickX = null;
         lastClickY = null;
         currentTrail = null;
+        lastTrailX = null;
+        lastTrailY = null;
+        wasInRange = false;
         return;
       }
       const worldX = camX + (mouseX - canvas.width / 2) / zoom;
       const worldY = camY + (mouseY - canvas.height / 2) / zoom;
-      if (lastClickX !== null && isInRange(lastClickX, lastClickY)) {
-        addToTrail(worldX, worldY, stamina);
-        ws.send(JSON.stringify({ type: 'click', x: worldX, y: worldY, px: lastClickX, py: lastClickY }));
-      } else if (lastClickX === null) {
+      const inRange = isInRange(worldX, worldY);
+      const lastInRange = lastClickX !== null && isInRange(lastClickX, lastClickY);
+
+      if (lastClickX !== null && (inRange || lastInRange)) {
+        const cur = inRange ? { x: worldX, y: worldY } : clampToRange(worldX, worldY);
+        const prev = lastInRange ? { x: lastClickX, y: lastClickY } : clampToRange(lastClickX, lastClickY);
+        if (cur && prev) {
+          if (!lastInRange && inRange) addToTrail(prev.x, prev.y, stamina);
+          addToTrail(cur.x, cur.y, stamina);
+          ws.send(JSON.stringify({ type: 'click', x: cur.x, y: cur.y, px: prev.x, py: prev.y }));
+        }
+      } else {
+        currentTrail = null;
+        lastTrailX = null;
+        lastTrailY = null;
+        wasInRange = false;
         addClickEffect(worldX, worldY, stamina);
         ws.send(JSON.stringify({ type: 'click', x: worldX, y: worldY }));
       }
@@ -192,49 +418,8 @@
         ctx.beginPath(); ctx.arc(e.x, e.y, e.radius, 0, Math.PI * 2); ctx.stroke();
       }
 
-      // Drag trails (smooth curves)
-      for (let i = dragTrails.length - 1; i >= 0; i--) {
-        const e = dragTrails[i];
-        if (e.points.length < 2) continue;
-
-        const now = Date.now();
-        const maxAge = 800;
-
-        ctx.lineCap = 'butt';
-        ctx.lineJoin = 'round';
-
-        for (let j = 0; j < e.points.length - 2; j++) {
-          const p0 = e.points[j];
-          const p1 = e.points[j + 1];
-          const p2 = e.points[j + 2];
-
-          const age = now - p0.t;
-          const fade = Math.max(0, 1 - age / maxAge);
-          if (fade <= 0) continue;
-
-          // Midpoints for smooth quadratic
-          const mx1 = (p0.x + p1.x) / 2;
-          const my1 = (p0.y + p1.y) / 2;
-          const mx2 = (p1.x + p2.x) / 2;
-          const my2 = (p1.y + p2.y) / 2;
-
-          const s = p1.stam / 100;
-          ctx.strokeStyle = `hsla(120, 100%, 60%, ${(0.1 + 0.4 * s) * fade})`;
-          ctx.lineWidth = (4 + 16 * s) * fade;
-
-          ctx.beginPath();
-          ctx.moveTo(mx1, my1);
-          ctx.quadraticCurveTo(p1.x, p1.y, mx2, my2);
-          ctx.stroke();
-        }
-
-        // Cleanup when tail fully faded
-        if (now - e.points[e.points.length - 1].t > maxAge) {
-          dragTrails.splice(i, 1);
-        }
-      }
-
       ctx.restore();
+      renderTrailsGL();
 
       ctx.fillStyle = '#fff';
       ctx.font = '20px sans-serif';
