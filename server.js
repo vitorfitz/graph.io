@@ -4,9 +4,9 @@ const TICK_RATE = 60;
 const MAP_W = 3000, MAP_H = 3000, DOT_DENSITY = 1 / 20000, BASE_DOTS = MAP_W * MAP_H * DOT_DENSITY;
 const CONNECT_DIST = 50, DISCONNECT_DIST = 50;
 const SPAWN_DOTS = 5, SPAWN_MARGIN = 200, SPAWN_MIN_DIST = 300, SPAWN_SPREAD = 50;
-const CLICK_RADIUS = 150, CLICK_FORCE = 10, VELOCITY_DECAY = 0.05, CLICK_RANGE = 200;
-const MAX_STAMINA = 100, STAMINA_REGEN = 100 / TICK_RATE, CLICK_COST = 25, DRAG_COST_PER_DIST = 0.05, HOLD_COST = 100 / TICK_RATE;
-const MIN_DOT_VEL = 0.25, MAX_DOT_VEL = 0.5;
+const CLICK_RADIUS = 180, CLICK_FORCE = 12, VELOCITY_DECAY = 0.05, CLICK_RANGE = 200;
+const MAX_STAMINA = 100, CLICK_COST = 12, DRAG_COST_PER_DIST = 0.12;
+const MIN_DOT_VEL = 0.4, MAX_DOT_VEL = 0.8;
 const REPULSION_DECAY = 1;
 
 const dots = [];
@@ -184,7 +184,9 @@ function update() {
   }
 
   for (const [id, player] of players) {
-    player.stamina = Math.min(MAX_STAMINA, player.stamina + STAMINA_REGEN);
+    if (!player.holding) player.stamina = Math.min(MAX_STAMINA, player.stamina + (MAX_STAMINA - player.stamina) * 0.1);
+    else player.holding = false;
+
     if (!dots.some(d => d.owner === id)) respawnPlayer(id);
     if (player.ws.readyState === WebSocket.OPEN) {
       player.ws.send(JSON.stringify({ type: 'state', dots, connections, stamina: player.stamina }));
@@ -226,12 +228,13 @@ function handleClick(playerId, x, y, px, py) {
   if (!myDots.some(d => Math.hypot(d.x - x, d.y - y) < CLICK_RANGE)) return;
 
   // Calculate stamina cost
-  let cost = px !== undefined ? Math.hypot(x - px, y - py) * DRAG_COST_PER_DIST + HOLD_COST : CLICK_COST;
+  player.holding = px !== undefined;
+  let cost = player.holding ? Math.hypot(x - px, y - py) * DRAG_COST_PER_DIST : CLICK_COST;
   if (player.stamina < cost) cost = player.stamina;
   player.stamina -= cost;
 
   // Effectiveness scales with stamina (0.2 to 1.0)
-  const effectiveness = 0.2 + 0.8 * (player.stamina / (MAX_STAMINA - CLICK_COST));
+  const effectiveness = 0.2 + 0.8 * Math.sqrt(player.stamina / MAX_STAMINA);
   const radius = CLICK_RADIUS * effectiveness;
 
   for (const d of dots) {
@@ -255,7 +258,7 @@ console.log('Server running on ws://localhost:8080');
 
 wss.on('connection', ws => {
   const id = nextPlayerId++;
-  players.set(id, { ws, stamina: MAX_STAMINA });
+  players.set(id, { ws, stamina: MAX_STAMINA, holding: false });
   spawnPlayer(id);
   ws.send(JSON.stringify({ type: 'init', id, MAP_W, MAP_H, CLICK_RANGE }));
   ws.on('message', data => {
