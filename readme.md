@@ -1,7 +1,5 @@
 `npx serve .`
 
-`npm install ws`
-
 `node server.js`
 
 ## TODO:

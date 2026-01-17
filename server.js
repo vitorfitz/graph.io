@@ -225,7 +225,9 @@ function handleClick(playerId, x, y, px, py) {
   if (!player) return;
 
   const myDots = dots.filter(d => d.owner === playerId);
-  if (!myDots.some(d => Math.hypot(d.x - x, d.y - y) < CLICK_RANGE)) return;
+  const inRange = (cx, cy) => myDots.some(d => Math.hypot(d.x - cx, d.y - cy) < CLICK_RANGE);
+  if (!inRange(x, y)) return;
+  if (px !== undefined && !inRange(px, py)) return;
 
   // Calculate stamina cost
   player.holding = px !== undefined;

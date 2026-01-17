@@ -35,6 +35,8 @@
     const MAX_SCREEN_FILL = 0.6, MIN_ZOOM = 0.5, MAX_ZOOM = 1;
     const HOLD_CLICK_INTERVAL = 1000 / 60;
     const DOT_RADIUS = 6;
+    const CLICK_ANIM_DURATION = 727;
+    const TRAIL_ANIM_DURATION = 1000;
 
     let myId = null, MAP_W = 3000, MAP_H = 2000, CLICK_RANGE = 200;
     let dots = [], connections = [], stamina = 100;
@@ -62,20 +64,46 @@
     };
 
     let mouseDown = false, mouseX = 0, mouseY = 0, lastClickX = null, lastClickY = null;
+    const clickEffects = [];
+    const dragTrails = []; // [{points: [{x,y}], birth, width, alpha}]
+
+    function isInRange(x, y) {
+      return dots.some(d => d.owner === myId && Math.hypot(d.x - x, d.y - y) < CLICK_RANGE);
+    }
+
+    function addClickEffect(x, y, stam) {
+      if (!isInRange(x, y)) return;
+      const t = stam / 100;
+      clickEffects.push({ x, y, radius: 0, maxRadius: 20 + 80 * t, alpha: 0.1 + 0.4 * t, hue: 120, birth: Date.now() });
+    }
+
+    let currentTrail = null;
+    function addToTrail(x, y, stam) {
+      if (!isInRange(x, y)) return;
+      if (!currentTrail) {
+        currentTrail = { points: [], birth: Date.now() };
+        dragTrails.push(currentTrail);
+      }
+      currentTrail.points.push({ x, y, t: Date.now(), stam });
+    }
+
     canvas.addEventListener('mousedown', e => { mouseDown = true; mouseX = e.clientX; mouseY = e.clientY; lastClickX = null; });
-    canvas.addEventListener('mouseup', () => { mouseDown = false; lastClickX = null; });
+    canvas.addEventListener('mouseup', () => { mouseDown = false; lastClickX = null; currentTrail = null; });
     canvas.addEventListener('mousemove', e => { mouseX = e.clientX; mouseY = e.clientY; });
     setInterval(() => {
       if (!mouseDown || !myId) {
         lastClickX = null;
         lastClickY = null;
+        currentTrail = null;
         return;
       }
       const worldX = camX + (mouseX - canvas.width / 2) / zoom;
       const worldY = camY + (mouseY - canvas.height / 2) / zoom;
-      if (lastClickX !== null) {
+      if (lastClickX !== null && isInRange(lastClickX, lastClickY)) {
+        addToTrail(worldX, worldY, stamina);
         ws.send(JSON.stringify({ type: 'click', x: worldX, y: worldY, px: lastClickX, py: lastClickY }));
-      } else {
+      } else if (lastClickX === null) {
+        addClickEffect(worldX, worldY, stamina);
         ws.send(JSON.stringify({ type: 'click', x: worldX, y: worldY }));
       }
       lastClickX = worldX; lastClickY = worldY;
@@ -150,6 +178,60 @@
       for (const d of dots) {
         ctx.fillStyle = d.owner !== null ? getColor(d.owner) : UNCLAIMED_COLOR;
         ctx.beginPath(); ctx.arc(d.x, d.y, DOT_RADIUS, 0, Math.PI * 2); ctx.fill();
+      }
+
+      // Click effects (rings)
+      const now = Date.now();
+      for (let i = clickEffects.length - 1; i >= 0; i--) {
+        const e = clickEffects[i];
+        const progress = (now - e.birth) / CLICK_ANIM_DURATION;
+        if (progress > 1) { clickEffects.splice(i, 1); continue; }
+        e.radius = e.maxRadius * progress;
+        ctx.strokeStyle = `hsla(${e.hue}, 100%, 60%, ${e.alpha * (1 - progress)})`;
+        ctx.lineWidth = 6 * (1 - progress);
+        ctx.beginPath(); ctx.arc(e.x, e.y, e.radius, 0, Math.PI * 2); ctx.stroke();
+      }
+
+      // Drag trails (smooth curves)
+      for (let i = dragTrails.length - 1; i >= 0; i--) {
+        const e = dragTrails[i];
+        if (e.points.length < 2) continue;
+
+        const now = Date.now();
+        const maxAge = 800;
+
+        ctx.lineCap = 'butt';
+        ctx.lineJoin = 'round';
+
+        for (let j = 0; j < e.points.length - 2; j++) {
+          const p0 = e.points[j];
+          const p1 = e.points[j + 1];
+          const p2 = e.points[j + 2];
+
+          const age = now - p0.t;
+          const fade = Math.max(0, 1 - age / maxAge);
+          if (fade <= 0) continue;
+
+          // Midpoints for smooth quadratic
+          const mx1 = (p0.x + p1.x) / 2;
+          const my1 = (p0.y + p1.y) / 2;
+          const mx2 = (p1.x + p2.x) / 2;
+          const my2 = (p1.y + p2.y) / 2;
+
+          const s = p1.stam / 100;
+          ctx.strokeStyle = `hsla(120, 100%, 60%, ${(0.1 + 0.4 * s) * fade})`;
+          ctx.lineWidth = (4 + 16 * s) * fade;
+
+          ctx.beginPath();
+          ctx.moveTo(mx1, my1);
+          ctx.quadraticCurveTo(p1.x, p1.y, mx2, my2);
+          ctx.stroke();
+        }
+
+        // Cleanup when tail fully faded
+        if (now - e.points[e.points.length - 1].t > maxAge) {
+          dragTrails.splice(i, 1);
+        }
       }
 
       ctx.restore();
