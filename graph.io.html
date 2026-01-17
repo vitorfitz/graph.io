@@ -37,7 +37,7 @@
     const DOT_RADIUS = 6;
 
     let myId = null, MAP_W = 3000, MAP_H = 2000, CLICK_RANGE = 200;
-    let dots = [], connections = [];
+    let dots = [], connections = [], stamina = 100;
     let camX = 0, camY = 0, zoom = 1, camInitialized = false;
 
     const colors = {};
@@ -58,16 +58,15 @@
     ws.onmessage = e => {
       const msg = JSON.parse(e.data);
       if (msg.type === 'init') { myId = msg.id; MAP_W = msg.MAP_W; MAP_H = msg.MAP_H; CLICK_RANGE = msg.CLICK_RANGE; }
-      else if (msg.type === 'state') { dots = msg.dots; connections = msg.connections; }
+      else if (msg.type === 'state') { dots = msg.dots; connections = msg.connections; stamina = msg.stamina; }
     };
 
-    let mouseDown = false, autoClick = false, mouseX = 0, mouseY = 0, lastClickX = null, lastClickY = null;
+    let mouseDown = false, mouseX = 0, mouseY = 0, lastClickX = null, lastClickY = null;
     canvas.addEventListener('mousedown', e => { mouseDown = true; mouseX = e.clientX; mouseY = e.clientY; lastClickX = null; });
     canvas.addEventListener('mouseup', () => { mouseDown = false; lastClickX = null; });
     canvas.addEventListener('mousemove', e => { mouseX = e.clientX; mouseY = e.clientY; });
-    window.addEventListener('keydown', e => { if (e.code === 'Space') { e.preventDefault(); autoClick = !autoClick; lastClickX = null; } });
     setInterval(() => {
-      if ((!mouseDown && !autoClick) || !myId) {
+      if (!mouseDown || !myId) {
         lastClickX = null;
         lastClickY = null;
         return;
@@ -158,6 +157,7 @@
       ctx.fillStyle = '#fff';
       ctx.font = '20px sans-serif';
       ctx.fillText(`Score: ${mine.length}`, 10, 30);
+      ctx.fillText(`Stamina: ${Math.round(stamina)}`, 10, 55);
 
       requestAnimationFrame(render);
     }

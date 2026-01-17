@@ -1,15 +1,16 @@
 const WebSocket = require('ws');
 
+const TICK_RATE = 60;
 const MAP_W = 3000, MAP_H = 3000, DOT_DENSITY = 1 / 20000, BASE_DOTS = MAP_W * MAP_H * DOT_DENSITY;
 const CONNECT_DIST = 50, DISCONNECT_DIST = 50;
 const SPAWN_DOTS = 5, SPAWN_MARGIN = 200, SPAWN_MIN_DIST = 300, SPAWN_SPREAD = 50;
 const CLICK_RADIUS = 150, CLICK_FORCE = 10, VELOCITY_DECAY = 0.05, CLICK_RANGE = 200;
-const MIN_DOT_VEL = 0.4, MAX_DOT_VEL = 0.8;
+const MAX_STAMINA = 100, STAMINA_REGEN = 100 / TICK_RATE, CLICK_COST = 25, DRAG_COST_PER_DIST = 0.05, HOLD_COST = 100 / TICK_RATE;
+const MIN_DOT_VEL = 0.25, MAX_DOT_VEL = 0.5;
 const REPULSION_DECAY = 1;
-const TICK_RATE = 60;
 
 const dots = [];
-const players = new Map();
+const players = new Map(); // id -> { ws, stamina }
 const activeConnections = new Set();
 let nextPlayerId = 1;
 let currentTick = 0;
@@ -182,18 +183,20 @@ function update() {
     dots[i].owner = newOwners[i];
   }
 
-  for (const [id] of players) {
+  for (const [id, player] of players) {
+    player.stamina = Math.min(MAX_STAMINA, player.stamina + STAMINA_REGEN);
     if (!dots.some(d => d.owner === id)) respawnPlayer(id);
+    if (player.ws.readyState === WebSocket.OPEN) {
+      player.ws.send(JSON.stringify({ type: 'state', dots, connections, stamina: player.stamina }));
+    }
   }
-
-  broadcast({ type: 'state', dots, connections });
 }
 
 function respawnPlayer(id) {
-  const ws = players.get(id);
-  if (ws) {
+  const player = players.get(id);
+  if (player) {
     spawnPlayer(id);
-    ws.send(JSON.stringify({ type: 'respawn' }));
+    player.ws.send(JSON.stringify({ type: 'respawn' }));
   }
 }
 
@@ -216,8 +219,21 @@ function closestPointOnSegment(px, py, x1, y1, x2, y2) {
 }
 
 function handleClick(playerId, x, y, px, py) {
+  const player = players.get(playerId);
+  if (!player) return;
+
   const myDots = dots.filter(d => d.owner === playerId);
   if (!myDots.some(d => Math.hypot(d.x - x, d.y - y) < CLICK_RANGE)) return;
+
+  // Calculate stamina cost
+  let cost = px !== undefined ? Math.hypot(x - px, y - py) * DRAG_COST_PER_DIST + HOLD_COST : CLICK_COST;
+  if (player.stamina < cost) cost = player.stamina;
+  player.stamina -= cost;
+
+  // Effectiveness scales with stamina (0.2 to 1.0)
+  const effectiveness = 0.2 + 0.8 * (player.stamina / (MAX_STAMINA - CLICK_COST));
+  const radius = CLICK_RADIUS * effectiveness;
+
   for (const d of dots) {
     let cx = x, cy = y;
     if (px !== undefined) {
@@ -226,17 +242,12 @@ function handleClick(playerId, x, y, px, py) {
     }
     const dx = d.x - cx, dy = d.y - cy;
     const dist = Math.hypot(dx, dy);
-    if (dist < CLICK_RADIUS && dist > 0) {
-      const force = (1 - dist / CLICK_RADIUS) * CLICK_FORCE;
+    if (dist < radius && dist > 0) {
+      const force = (1 - dist / radius) * CLICK_FORCE * effectiveness;
       d.clickVx = addForce(d.clickVx, (dx / dist) * force);
       d.clickVy = addForce(d.clickVy, (dy / dist) * force);
     }
   }
-}
-
-function broadcast(msg) {
-  const data = JSON.stringify(msg);
-  for (const ws of players.values()) if (ws.readyState === WebSocket.OPEN) ws.send(data);
 }
 
 const wss = new WebSocket.Server({ port: 8080 });
@@ -244,7 +255,7 @@ console.log('Server running on ws://localhost:8080');
 
 wss.on('connection', ws => {
   const id = nextPlayerId++;
-  players.set(id, ws);
+  players.set(id, { ws, stamina: MAX_STAMINA });
   spawnPlayer(id);
   ws.send(JSON.stringify({ type: 'init', id, MAP_W, MAP_H, CLICK_RANGE }));
   ws.on('message', data => {
