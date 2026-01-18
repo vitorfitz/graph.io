@@ -229,6 +229,12 @@ function handleClick(playerId, x, y, px, py) {
   if (!inRange(x, y)) return;
   if (px !== undefined && !inRange(px, py)) return;
 
+  // Broadcast click to all other players
+  const clickMsg = JSON.stringify({ type: 'click', id: playerId, x, y, px, py, stam: player.stamina });
+  for (const [id, p] of players) {
+    if (id !== playerId && p.ws.readyState === WebSocket.OPEN) p.ws.send(clickMsg);
+  }
+
   // Calculate stamina cost
   player.holding = px !== undefined;
   let cost = player.holding ? Math.hypot(x - px, y - py) * DRAG_COST_PER_DIST : CLICK_COST;

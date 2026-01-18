@@ -42,17 +42,13 @@
     let dots = [], connections = [], stamina = 100;
     let camX = 0, camY = 0, zoom = 1, camInitialized = false;
 
-    const colors = {};
+    function getHue(id) {
+      return id === myId ? 120 : ((id * 173) % 280) + 160;
+    }
+
     function getColor(id, alpha = 1) {
-      if (!colors[id]) {
-        if (id === myId) {
-          colors[id] = '0, 187, 0';
-        } else {
-          const hue = ((id * 173) % 280) + 160;
-          colors[id] = `${hue}, 70%, 50%`;
-        }
-      }
-      return id === myId ? `rgba(${colors[id]}, ${alpha})` : `hsla(${colors[id]}, ${alpha})`;
+      const hue = getHue(id);
+      return id === myId ? `rgba(0, 187, 0, ${alpha})` : `hsla(${hue}, 70%, 50%, ${alpha})`;
     }
 
     const ws = new WebSocket('ws://localhost:8080');
@@ -61,11 +57,13 @@
       const msg = JSON.parse(e.data);
       if (msg.type === 'init') { myId = msg.id; MAP_W = msg.MAP_W; MAP_H = msg.MAP_H; CLICK_RANGE = msg.CLICK_RANGE; }
       else if (msg.type === 'state') { dots = msg.dots; connections = msg.connections; stamina = msg.stamina; }
+      else if (msg.type === 'click') handleRemoteClick(msg);
     };
 
     let mouseDown = false, mouseX = 0, mouseY = 0, lastClickX = null, lastClickY = null;
     const clickEffects = [];
     const dragTrails = []; // [{points: [{x,y}], birth, width, alpha}]
+    const remoteTrails = {}; // playerId -> trail
 
     function isInRange(x, y) {
       return dots.some(d => d.owner === myId && Math.hypot(d.x - x, d.y - y) < CLICK_RANGE);
@@ -87,10 +85,23 @@
       return best;
     }
 
-    function addClickEffect(x, y, stam) {
-      if (!isInRange(x, y)) return;
+    function addClickEffect(x, y, stam, playerId = myId) {
       const t = stam / 100;
-      clickEffects.push({ x, y, radius: 0, maxRadius: 20 + 80 * t, alpha: 0.1 + 0.4 * t, hue: 120, birth: Date.now() });
+      clickEffects.push({ x, y, radius: 0, maxRadius: 20 + 80 * t, alpha: 0.1 + 0.4 * t, hue: getHue(playerId), birth: Date.now() });
+    }
+
+    function handleRemoteClick(msg) {
+      const { id, x, y, px, py, stam } = msg;
+      if (px !== undefined) {
+        if (!remoteTrails[id]) {
+          remoteTrails[id] = { points: [{ x: px, y: py, t: Date.now(), stam }], birth: Date.now(), playerId: id };
+          dragTrails.push(remoteTrails[id]);
+        }
+        remoteTrails[id].points.push({ x, y, t: Date.now(), stam });
+      } else {
+        remoteTrails[id] = null;
+        addClickEffect(x, y, stam, id);
+      }
     }
 
     let currentTrail = null, lastTrailX = null, lastTrailY = null, wasInRange = false;
@@ -243,10 +254,28 @@
       const maxAge = 800;
       const STEPS = 12;
 
+      // HSL to RGB for WebGL (h in degrees, s/l 0-1)
+      function hsl2rgb(h, s, l) {
+        const c = (1 - Math.abs(2 * l - 1)) * s;
+        const x = c * (1 - Math.abs((h / 60) % 2 - 1));
+        const m = l - c / 2;
+        let r, g, b;
+        if (h < 60) { r = c; g = x; b = 0; }
+        else if (h < 120) { r = x; g = c; b = 0; }
+        else if (h < 180) { r = 0; g = c; b = x; }
+        else if (h < 240) { r = 0; g = x; b = c; }
+        else if (h < 300) { r = x; g = 0; b = c; }
+        else { r = c; g = 0; b = x; }
+        return [r + m, g + m, b + m];
+      }
+
       for (let i = dragTrails.length - 1; i >= 0; i--) {
         const trail = dragTrails[i];
         const pts = trail.points;
         if (pts.length < 2) continue;
+
+        const hue = getHue(trail.playerId ?? myId);
+        const [r, g, b] = hsl2rgb(hue, 0.7, 0.5);
 
         // Create phantom endpoints for smooth start/end
         const last = pts.length - 1;
@@ -288,7 +317,7 @@
           }
 
           gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(verts), gl.DYNAMIC_DRAW);
-          gl.uniform4f(colorLoc, 0.2 * alpha, 1.0 * alpha, 0.2 * alpha, alpha);
+          gl.uniform4f(colorLoc, r * alpha, g * alpha, b * alpha, alpha);
           gl.drawArrays(gl.TRIANGLE_STRIP, 0, verts.length / 2);
         }
 
@@ -329,8 +358,10 @@
         lastTrailX = null;
         lastTrailY = null;
         wasInRange = false;
-        addClickEffect(worldX, worldY, stamina);
-        ws.send(JSON.stringify({ type: 'click', x: worldX, y: worldY }));
+        if (inRange) {
+          addClickEffect(worldX, worldY, stamina);
+          ws.send(JSON.stringify({ type: 'click', x: worldX, y: worldY }));
+        }
       }
       lastClickX = worldX; lastClickY = worldY;
     }, HOLD_CLICK_INTERVAL);
@@ -395,6 +426,7 @@
       ctx.lineWidth = 1 / zoom;
       for (const [i, j] of connections) {
         const di = dots[i], dj = dots[j];
+        if (di.owner !== dj.owner) continue;
         ctx.lineWidth = 1;
         ctx.strokeStyle = (di.owner === dj.owner && di.owner !== null) ? getColor(di.owner) : UNCLAIMED_COLOR;
         ctx.beginPath(); ctx.moveTo(di.x, di.y); ctx.lineTo(dj.x, dj.y); ctx.stroke();
