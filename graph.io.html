@@ -33,7 +33,6 @@
     const GRID_SIZE = 100, GRID_COLOR = '#222';
     const UNCLAIMED_COLOR = "#888";
     const MAX_SCREEN_FILL = 0.6, MIN_ZOOM = 0.5, MAX_ZOOM = 1;
-    const HOLD_CLICK_INTERVAL = 1000 / 60;
     const DOT_RADIUS = 6;
     const CLICK_ANIM_DURATION = 727;
     const TRAIL_ANIM_DURATION = 1000;
@@ -141,18 +140,29 @@
 
     const vs = `
       attribute vec2 pos;
+      attribute float a;
+
       uniform vec2 res, cam;
       uniform float zoom;
+
+      varying float vA;
+
       void main() {
         vec2 p = (pos - cam) * zoom + res * 0.5;
         gl_Position = vec4(p / res * 2.0 - 1.0, 0, 1);
         gl_Position.y *= -1.0;
+        vA = a;
       }
     `;
     const fs = `
       precision mediump float;
-      uniform vec4 color;
-      void main() { gl_FragColor = color; }
+
+      uniform vec3 color;
+      varying float vA;
+
+      void main() {
+        gl_FragColor = vec4(color * vA, vA);
+      }
     `;
 
     function compileShader(src, type) {
@@ -176,8 +186,15 @@
 
     const buf = gl.createBuffer();
     gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+
+    const alphaLoc = gl.getAttribLocation(prog, 'a');
+
     gl.enableVertexAttribArray(posLoc);
-    gl.vertexAttribPointer(posLoc, 2, gl.FLOAT, false, 0, 0);
+    gl.enableVertexAttribArray(alphaLoc);
+
+    // interleaved: x, y, alpha
+    gl.vertexAttribPointer(posLoc, 2, gl.FLOAT, false, 12, 0);
+    gl.vertexAttribPointer(alphaLoc, 1, gl.FLOAT, false, 12, 8);
 
     gl.enable(gl.BLEND);
     gl.blendEquation(gl.MAX);
@@ -254,18 +271,17 @@
       const maxAge = 800;
       const STEPS = 12;
 
-      // HSL to RGB for WebGL (h in degrees, s/l 0-1)
       function hsl2rgb(h, s, l) {
         const c = (1 - Math.abs(2 * l - 1)) * s;
         const x = c * (1 - Math.abs((h / 60) % 2 - 1));
         const m = l - c / 2;
-        let r, g, b;
-        if (h < 60) { r = c; g = x; b = 0; }
-        else if (h < 120) { r = x; g = c; b = 0; }
-        else if (h < 180) { r = 0; g = c; b = x; }
-        else if (h < 240) { r = 0; g = x; b = c; }
-        else if (h < 300) { r = x; g = 0; b = c; }
-        else { r = c; g = 0; b = x; }
+        let r = 0, g = 0, b = 0;
+        if (h < 60) [r, g, b] = [c, x, 0];
+        else if (h < 120) [r, g, b] = [x, c, 0];
+        else if (h < 180) [r, g, b] = [0, c, x];
+        else if (h < 240) [r, g, b] = [0, x, c];
+        else if (h < 300) [r, g, b] = [x, 0, c];
+        else [r, g, b] = [c, 0, x];
         return [r + m, g + m, b + m];
       }
 
@@ -276,49 +292,81 @@
 
         const hue = getHue(trail.playerId ?? myId);
         const [r, g, b] = hsl2rgb(hue, 0.7, 0.5);
+        gl.uniform3f(colorLoc, r, g, b);
 
-        // Create phantom endpoints for smooth start/end
         const last = pts.length - 1;
-        const p0 = { x: 2 * pts[0].x - pts[1].x, y: 2 * pts[0].y - pts[1].y, t: pts[0].t, stam: pts[0].stam };
-        const pN = { x: 2 * pts[last].x - pts[last - 1].x, y: 2 * pts[last].y - pts[last - 1].y, t: pts[last].t, stam: pts[last].stam };
+        const p0 = {
+          x: 2 * pts[0].x - pts[1].x,
+          y: 2 * pts[0].y - pts[1].y,
+          t: pts[0].t,
+          stam: pts[0].stam
+        };
+        const pN = {
+          x: 2 * pts[last].x - pts[last - 1].x,
+          y: 2 * pts[last].y - pts[last - 1].y,
+          t: pts[last].t,
+          stam: pts[last].stam
+        };
+
         const extended = [p0, ...pts, pN];
 
         for (let j = 1; j < extended.length - 2; j++) {
-          const p0 = extended[j - 1];
           const p1 = extended[j];
           const p2 = extended[j + 1];
-          const p3 = extended[j + 2];
 
-          const age = now - p1.t;
-          const fade = Math.max(0, 1 - age / maxAge);
-          if (fade <= 0) continue;
+          const age1 = now - p1.t;
+          const age2 = now - p2.t;
+          const fade1 = Math.max(0, 1 - age1 / maxAge);
+          const fade2 = Math.max(0, 1 - age2 / maxAge);
+          if (fade1 <= 0 && fade2 <= 0) continue;
 
-          const s = p1.stam / 100;
-          const alpha = (0.1 + 0.4 * s) * fade;
-          const halfWidth = (4 + 16 * s) * fade * 0.5;
+          const s1 = p1.stam / 100;
+          const s2 = p2.stam / 100;
+
+          const width1 = (4 + 16 * s1) * fade1;
+          const width2 = (4 + 16 * s2) * fade2;
+
+          const alpha1 = (0.1 + 0.4 * s1) * fade1;
+          const alpha2 = (0.1 + 0.4 * s2) * fade2;
 
           const verts = [];
 
           for (let k = 0; k <= STEPS; k++) {
             const t = k / STEPS;
 
-            const pos = catmullRomCentripetal(p0, p1, p2, p3, t);
-            const tan = catmullRomTangent(p0, p1, p2, p3, t);
+            const pos = catmullRomCentripetal(
+              extended[j - 1],
+              p1,
+              p2,
+              extended[j + 2],
+              t
+            );
+
+            const tan = catmullRomTangent(
+              extended[j - 1],
+              p1,
+              p2,
+              extended[j + 2],
+              t
+            );
+
             const nrm = normalFromTangent(tan);
 
-            const nx = nrm.x * halfWidth;
-            const ny = nrm.y * halfWidth;
+            const width = width1 + (width2 - width1) * t;
+            const alpha = alpha1 + (alpha2 - alpha1) * t;
+            const hw = width * 0.5;
 
-            // left
+            const nx = nrm.x * hw;
+            const ny = nrm.y * hw;
+
             verts.push(
-              pos.x + nx, pos.y + ny,
-              pos.x - nx, pos.y - ny
+              pos.x + nx, pos.y + ny, alpha,
+              pos.x - nx, pos.y - ny, alpha
             );
           }
 
           gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(verts), gl.DYNAMIC_DRAW);
-          gl.uniform4f(colorLoc, r * alpha, g * alpha, b * alpha, alpha);
-          gl.drawArrays(gl.TRIANGLE_STRIP, 0, verts.length / 2);
+          gl.drawArrays(gl.TRIANGLE_STRIP, 0, verts.length / 3);
         }
 
         if (now - pts[pts.length - 1].t > maxAge) {
@@ -326,11 +374,12 @@
         }
       }
     }
-
+   
     addEventListener('mousedown', e => { mouseDown = true; mouseX = e.clientX; mouseY = e.clientY; lastClickX = null; });
     addEventListener('mouseup', () => { mouseDown = false; lastClickX = null; currentTrail = null; lastTrailX = null; lastTrailY = null; wasInRange = false; });
     canvas.addEventListener('mousemove', e => { mouseX = e.clientX; mouseY = e.clientY; });
-    setInterval(() => {
+
+    function tick() {
       if (!mouseDown || !myId) {
         lastClickX = null;
         lastClickY = null;
@@ -364,7 +413,13 @@
         }
       }
       lastClickX = worldX; lastClickY = worldY;
-    }, HOLD_CLICK_INTERVAL);
+    }
+
+    function updateHold() {
+      tick();
+      requestAnimationFrame(updateHold);
+    }
+    updateHold();
 
     function render() {
       const mine = dots.filter(d => d.owner === myId);
