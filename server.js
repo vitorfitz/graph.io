@@ -5,7 +5,7 @@ const MAP_W = 3000, MAP_H = 3000, DOT_DENSITY = 1 / 20000, BASE_DOTS = MAP_W * M
 const CONNECT_DIST = 50, DISCONNECT_DIST = 50;
 const SPAWN_DOTS = 5, SPAWN_MARGIN = 200, SPAWN_MIN_DIST = 300, SPAWN_SPREAD = 50;
 const CLICK_RADIUS = 180, CLICK_FORCE = 12, VELOCITY_DECAY = 0.05, CLICK_RANGE = 200;
-const MAX_STAMINA = 100, CLICK_COST = 12, DRAG_COST_PER_DIST = 0.12;
+const MAX_STAMINA = 100, CLICK_COST = 15, DRAG_COST_PER_DIST = 0.15;
 const MIN_DOT_VEL = 0.4, MAX_DOT_VEL = 0.8;
 const REPULSION_DECAY = 1;
 
@@ -242,7 +242,7 @@ function handleClick(playerId, x, y, px, py) {
   player.stamina -= cost;
 
   // Effectiveness scales with stamina (0.2 to 1.0)
-  const effectiveness = 0.2 + 0.8 * Math.sqrt(player.stamina / MAX_STAMINA);
+  const effectiveness = 0.4 + 0.6 * Math.sqrt(player.stamina / MAX_STAMINA);
   const radius = CLICK_RADIUS * effectiveness;
 
   for (const d of dots) {

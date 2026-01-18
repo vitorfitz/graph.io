@@ -413,7 +413,7 @@
       // Click range areas per player
       const owners = [...new Set(dots.map(d => d.owner).filter(o => o !== null))];
       for (const owner of owners) {
-        ctx.fillStyle = getColor(owner, 0.15);
+        ctx.fillStyle = getColor(owner, 0.12);
         ctx.beginPath();
         for (const d of dots.filter(d => d.owner === owner)) {
           ctx.moveTo(d.x + CLICK_RANGE, d.y);
