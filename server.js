@@ -13,7 +13,7 @@ const REPULSION_DECAY = 1;
 const SPECIAL_DOT_REPULSION_MULT = 1.6;
 const SPECIAL_SPAWN_CHANCE = 1 / 25;
 const MAX_SPECIAL_DOTS = 10;
-const SPECIAL_TYPE_WEIGHTS = { magnet: 1, bomb: 3, hub: 1, star: 1 };
+const SPECIAL_TYPE_WEIGHTS = { magnet: 1, bomb: 3, hub: 1, star: 1, spawner: 1 };
 
 // Magnet special dot
 const MAGNET_DURATION_MS = 3000;
@@ -31,8 +31,15 @@ const BOMB_RADIUS = 600, BOMB_FORCE = 40;
 
 // Star special dot: once claimed, fixes the claiming player's stamina at a
 // constant value for a fixed duration.
-const STAR_DURATION_MS = 6500;
+const STAR_DURATION_MS = 7000;
 const STAR_STAMINA = 150;
+
+// Spawner special dot: once claimed, spawns a fixed number of new dots
+// (owned by the claiming player) around itself over a fixed duration
+const SPAWNER_DURATION_MS = 4000;
+const SPAWNER_TOTAL_SPAWNS = 20;
+const SPAWNER_SPREAD = 15;
+const SPAWNER_NO_REPEL_TICKS = 10; // grace period during which a freshly spawned dot won't push its spawner away
 
 const dots = [];
 const players = new Map(); // id -> { ws, stamina }
@@ -97,10 +104,14 @@ function createDot(x, y, special = null) {
     clickVx: 0, clickVy: 0, repVx: 0, repVy: 0,
     magnetVx: 0, magnetVy: 0, magnetTargetIdx: -1,
     owner: null, claimTick: 0,
-    special, // null | 'magnet' | 'bomb' | 'hub' | 'star'
+    noRepelTargetUntil: 0, // tick until which this dot does not push away noRepelTargetId (grace period for freshly spawned dots)
+    noRepelTargetId: null, // the specific dot object this dot is exempt from repelling, while the grace period lasts
+    special, // null | 'magnet' | 'bomb' | 'hub' | 'star' | 'spawner'
     magnetUntil: 0, // tick at which this dot's OWN magnet effect (if it is one) expires
     hubUntil: 0, // tick at which this dot's OWN hub effect (if it is one) expires
     starUntil: 0, // tick at which this dot's OWN star effect (if it is one) expires
+    spawnerUntil: 0, // tick at which this dot's OWN spawner effect (if it is one) expires
+    spawnerSpawned: 0, // number of dots this spawner has produced so far (if it is one)
     // Bomb fuse starts counting down immediately upon spawn, regardless of ownership.
     bombDetonateTick: special === 'bomb'
       ? currentTick + Math.round((BOMB_MIN_FUSE_MS + Math.random() * (BOMB_MAX_FUSE_MS - BOMB_MIN_FUSE_MS)) / (1000 / TICK_RATE))
@@ -197,17 +208,23 @@ function update() {
 
   // Repulsion between nearby dots (using spatial hash)
   for (const [i, j] of getNearbyPairs()) {
-    const dx = dots[j].x - dots[i].x, dy = dots[j].y - dots[i].y;
+    const di = dots[i], dj = dots[j];
+    const dx = dj.x - di.x, dy = dj.y - di.y;
     const dist = Math.hypot(dx, dy);
     const radiusMult = Math.max(
-      dots[i].special ? SPECIAL_DOT_REPULSION_MULT : 1,
-      dots[j].special ? SPECIAL_DOT_REPULSION_MULT : 1
+      di.special ? SPECIAL_DOT_REPULSION_MULT : 1,
+      dj.special ? SPECIAL_DOT_REPULSION_MULT : 1
     );
     const force = getRepulsion(dist, radiusMult);
     if (force > 0) {
       const fx = (dx / dist) * force, fy = (dy / dist) * force;
-      dots[i].repVx -= fx; dots[i].repVy -= fy;
-      dots[j].repVx += fx; dots[j].repVy += fy;
+      // A dot in its post-spawn grace period does not push its spawner away
+      // (but the spawner still pushes it, and both still repel everyone else
+      // normally).
+      const diExemptFromRepellingDj = di.noRepelTargetId === dj && currentTick < di.noRepelTargetUntil;
+      const djExemptFromRepellingDi = dj.noRepelTargetId === di && currentTick < dj.noRepelTargetUntil;
+      if (!djExemptFromRepellingDi) { di.repVx -= fx; di.repVy -= fy; }
+      if (!diExemptFromRepellingDj) { dj.repVx += fx; dj.repVy += fy; }
     }
   }
 
@@ -215,12 +232,11 @@ function update() {
     const d = dots[i];
     d.clickVx *= (1 - VELOCITY_DECAY);
     d.clickVy *= (1 - VELOCITY_DECAY);
-    const bombFactor=d.special=="bomb"? 2: 1;
-    d.x += d.baseVx*bombFactor + d.clickVx + d.repVx + d.magnetVx;
-    d.y += d.baseVy*bombFactor + d.clickVy + d.repVy + d.magnetVy;
+    const bombFactor = d.special == "bomb" ? 2 : 1;
+    d.x += d.baseVx * bombFactor + d.clickVx + d.repVx + d.magnetVx;
+    d.y += d.baseVy * bombFactor + d.clickVy + d.repVy + d.magnetVy;
 
     if (d.x < 0 || d.x > MAP_W || d.y < 0 || d.y > MAP_H) {
-      if (dots.length > BASE_DOTS) { dots.splice(i, 1); continue; }
       d.x = (d.x + MAP_W) % MAP_W;
       d.y = (d.y + MAP_H) % MAP_H;
       d.owner = null;
@@ -232,6 +248,8 @@ function update() {
         d.magnetUntil = special.magnetUntil;
         d.hubUntil = special.hubUntil;
         d.starUntil = special.starUntil;
+        d.spawnerUntil = special.spawnerUntil;
+        d.spawnerSpawned = special.spawnerSpawned;
       }
     }
   }
@@ -264,6 +282,18 @@ function update() {
   for (let i = dots.length - 1; i >= 0; i--) {
     const d = dots[i];
     if (d.special === 'star' && d.owner !== null && currentTick >= d.starUntil) {
+      dots.splice(i, 1);
+      const { x, y } = randomEdgePoint();
+      dots.push(createDot(x, y));
+    }
+  }
+
+  // Remove expired spawner dots the same way, before connections/indices are
+  // computed for this tick. Any spawns still owed (e.g. because they were
+  // paused while at/above BASE_DOTS) are simply forfeited on expiry.
+  for (let i = dots.length - 1; i >= 0; i--) {
+    const d = dots[i];
+    if (d.special === 'spawner' && d.owner !== null && currentTick >= d.spawnerUntil) {
       dots.splice(i, 1);
       const { x, y } = randomEdgePoint();
       dots.push(createDot(x, y));
@@ -324,11 +354,12 @@ function update() {
   }
 
   const newOwners = dots.map((d, i) => {
-    // Timer-based powers (magnet, hub, star), once claimed, keep their owner
-    // until consumed/removed — they cannot be captured away by another player
-    // during their active window. Without this, an opponent could recapture
-    // the dot mid-effect and reset/restart the timer indefinitely.
-    if ((d.special === 'magnet' || d.special === 'hub' || d.special === 'star') && d.owner !== null) return d.owner;
+    // Timer-based powers (magnet, hub, star, spawner), once claimed, keep
+    // their owner until consumed/removed — they cannot be captured away by
+    // another player during their active window. Without this, an opponent
+    // could recapture the dot mid-effect and reset/restart the timer
+    // indefinitely.
+    if ((d.special === 'magnet' || d.special === 'hub' || d.special === 'star' || d.special === 'spawner') && d.owner !== null) return d.owner;
 
     const counts = connCount[i];
     const owners = Object.keys(counts).map(Number);
@@ -357,6 +388,10 @@ function update() {
       }
       if (dots[i].special === 'star' && newOwners[i] !== null) {
         dots[i].starUntil = currentTick + Math.round(STAR_DURATION_MS / (1000 / TICK_RATE));
+      }
+      if (dots[i].special === 'spawner' && newOwners[i] !== null) {
+        dots[i].spawnerUntil = currentTick + Math.round(SPAWNER_DURATION_MS / (1000 / TICK_RATE));
+        dots[i].spawnerSpawned = 0;
       }
     }
     dots[i].owner = newOwners[i];
@@ -391,6 +426,39 @@ function update() {
       d.magnetVx *= (1 - VELOCITY_DECAY);
       d.magnetVy *= (1 - VELOCITY_DECAY);
       if (Math.hypot(d.magnetVx, d.magnetVy) < 0.01) { d.magnetVx = 0; d.magnetVy = 0; }
+    }
+  }
+
+  // Active spawners produce new dots (owned by the claiming player) around
+  // themselves, evenly paced across their active duration. Progress is
+  // tracked by elapsed-time fraction rather than a fixed per-tick rate, so a
+  // spawner that gets paused (map at/above BASE_DOTS) catches up afterward
+  // instead of losing spawns, while never exceeding SPAWNER_TOTAL_SPAWNS or
+  // firing after spawnerUntil.
+  const spawnerTotalTicks = Math.max(1, Math.round(SPAWNER_DURATION_MS / (1000 / TICK_RATE)));
+  for (const spawner of dots) {
+    if (spawner.special !== 'spawner' || spawner.owner === null) continue;
+    if (currentTick >= spawner.spawnerUntil) continue;
+
+    const startTick = spawner.spawnerUntil - spawnerTotalTicks;
+    const elapsed = Math.min(1, Math.max(0, (currentTick - startTick) / spawnerTotalTicks));
+    const owed = Math.min(SPAWNER_TOTAL_SPAWNS, Math.floor(elapsed * SPAWNER_TOTAL_SPAWNS)) - spawner.spawnerSpawned;
+    for (let n = 0; n < owed; n++) {
+      // Create at the spawner's center first so we know the new dot's own
+      // (randomly assigned) base velocity direction, then place it exactly
+      // SPAWNER_SPREAD away along that same direction.
+      const dot = createDot(spawner.x, spawner.y);
+      const speed = Math.hypot(dot.baseVx, dot.baseVy) || 1;
+      dot.x += (dot.baseVx / speed) * SPAWNER_SPREAD;
+      dot.y += (dot.baseVy / speed) * SPAWNER_SPREAD;
+      dot.owner = spawner.owner;
+      // Grace period: this dot won't push the spawner away for a few ticks
+      // (the spawner still pushes it normally, and both still repel everyone
+      // else as usual).
+      dot.noRepelTargetId = spawner;
+      dot.noRepelTargetUntil = currentTick + SPAWNER_NO_REPEL_TICKS;
+      dots.push(dot);
+      spawner.spawnerSpawned++;
     }
   }
 
@@ -493,7 +561,7 @@ wss.on('connection', ws => {
   const id = nextPlayerId++;
   players.set(id, { ws, stamina: MAX_STAMINA, holding: false });
   spawnPlayer(id);
-  ws.send(JSON.stringify({ type: 'init', id, MAP_W, MAP_H, CLICK_RANGE, TICK_RATE, MAGNET_DURATION_MS, HUB_DURATION_MS, STAR_DURATION_MS }));
+  ws.send(JSON.stringify({ type: 'init', id, MAP_W, MAP_H, CLICK_RANGE, TICK_RATE, MAGNET_DURATION_MS, HUB_DURATION_MS, STAR_DURATION_MS, SPAWNER_DURATION_MS }));
   ws.on('message', data => {
     const msg = JSON.parse(data);
     if (msg.type === 'click') handleClick(id, msg.x, msg.y, msg.px, msg.py);
