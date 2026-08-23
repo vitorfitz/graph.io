@@ -13,15 +13,17 @@ const REPULSION_DECAY = 1;
 const SPECIAL_DOT_REPULSION_MULT = 1.6;
 const SPECIAL_SPAWN_CHANCE = 1 / 50;
 const MAX_SPECIAL_DOTS = 5;
+const SPECIAL_TYPE_WEIGHTS = { magnet: 1, bomb: 2, hub: 1 };
 
 // Magnet special dot
 const MAGNET_DURATION_MS = 3000;
 const MAGNET_ACCEL = 0.2;
 const MAGNET_MAX_SPEED = 6;
 
-// Hub special dot: once claimed, connects to every dot owned by the same
-// player regardless of distance, for a fixed duration.
+// Hub special dot: once claimed, connects to every dot (regardless of owner)
+// within HUB_RADIUS, for a fixed duration.
 const HUB_DURATION_MS = 15000;
+const HUB_RADIUS = 250;
 
 // Bomb special dot
 const BOMB_MIN_FUSE_MS = 30000, BOMB_MAX_FUSE_MS = 30000;
@@ -104,12 +106,21 @@ function countSpecialDots() {
   return dots.reduce((n, d) => n + (d.special ? 1 : 0), 0);
 }
 
+function pickWeightedSpecialType() {
+  const entries = Object.entries(SPECIAL_TYPE_WEIGHTS);
+  const total = entries.reduce((sum, [, w]) => sum + w, 0);
+  let r = Math.random() * total;
+  for (const [type, weight] of entries) {
+    r -= weight;
+    if (r < 0) return type;
+  }
+  return entries[entries.length - 1][0]; // fallback for float rounding
+}
+
 function maybeSpawnSpecialAt(x, y) {
   if (countSpecialDots() >= MAX_SPECIAL_DOTS) return null;
   if (Math.random() >= SPECIAL_SPAWN_CHANCE) return null;
-  const types = ['magnet', 'bomb', 'hub'];
-  const type = types[Math.floor(Math.random() * types.length)];
-  return createDot(x, y, type);
+  return createDot(x, y, pickWeightedSpecialType());
 }
 
 function randomEdgePoint() {
@@ -271,14 +282,17 @@ function update() {
   activeConnections.clear();
   for (const k of newActiveConnections) activeConnections.add(k);
 
-  // Active hubs connect to every dot owned by the same player, regardless of
-  // distance. These are added as real connections (not just visual) so they
-  // also feed into the capture logic below, same as proximity connections.
+  // Active hubs connect to every dot (regardless of owner) within HUB_RADIUS.
+  // These are added as real connections (not just visual) so they also feed
+  // into the capture logic below, same as proximity connections — meaning a
+  // hub can pull in and contest dots belonging to other players too.
   for (let h = 0; h < dots.length; h++) {
     const hub = dots[h];
     if (hub.special !== 'hub' || hub.owner === null || currentTick >= hub.hubUntil) continue;
     for (let i = 0; i < dots.length; i++) {
-      if (i === h || dots[i].owner !== hub.owner) continue;
+      if (i === h) continue;
+      const dx = dots[i].x - hub.x, dy = dots[i].y - hub.y;
+      if (dx * dx + dy * dy > HUB_RADIUS * HUB_RADIUS) continue;
       connections.push([Math.min(h, i), Math.max(h, i)]);
     }
   }
