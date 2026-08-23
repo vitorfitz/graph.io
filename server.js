@@ -13,7 +13,7 @@ const REPULSION_DECAY = 1;
 const SPECIAL_DOT_REPULSION_MULT = 1.6;
 const SPECIAL_SPAWN_CHANCE = 1 / 25;
 const MAX_SPECIAL_DOTS = 10;
-const SPECIAL_TYPE_WEIGHTS = { magnet: 1, bomb: 3, hub: 1, star: 1, spawner: 1 };
+const SPECIAL_TYPE_WEIGHTS = { magnet: 1, bomb: 4, hub: 1, star: 1, spawner: 1 };
 
 // Magnet special dot
 const MAGNET_DURATION_MS = 3000;
@@ -36,8 +36,8 @@ const STAR_STAMINA = 150;
 
 // Spawner special dot: once claimed, spawns a fixed number of new dots
 // (owned by the claiming player) around itself over a fixed duration
-const SPAWNER_DURATION_MS = 4000;
-const SPAWNER_TOTAL_SPAWNS = 20;
+const SPAWNER_DURATION_MS = 5000;
+const SPAWNER_TOTAL_SPAWNS = 25;
 const SPAWNER_SPREAD = 15;
 const SPAWNER_NO_REPEL_TICKS = 10; // grace period during which a freshly spawned dot won't push its spawner away
 
@@ -123,8 +123,8 @@ function countSpecialDots() {
   return dots.reduce((n, d) => n + (d.special ? 1 : 0), 0);
 }
 
-function pickWeightedSpecialType() {
-  const entries = Object.entries(SPECIAL_TYPE_WEIGHTS);
+function pickWeightedSpecialType(exclude = []) {
+  const entries = Object.entries(SPECIAL_TYPE_WEIGHTS).filter(([type]) => !exclude.includes(type));
   const total = entries.reduce((sum, [, w]) => sum + w, 0);
   let r = Math.random() * total;
   for (const [type, weight] of entries) {
@@ -137,7 +137,10 @@ function pickWeightedSpecialType() {
 function maybeSpawnSpecialAt(x, y) {
   if (countSpecialDots() >= MAX_SPECIAL_DOTS) return null;
   if (Math.random() >= SPECIAL_SPAWN_CHANCE) return null;
-  return createDot(x, y, pickWeightedSpecialType());
+  // The spawner power spawns additional dots, so don't let it appear once the
+  // map has already reached (or exceeded) the base dot count.
+  const exclude = dots.length >= BASE_DOTS ? ['spawner'] : [];
+  return createDot(x, y, pickWeightedSpecialType(exclude));
 }
 
 function randomEdgePoint() {
@@ -232,9 +235,8 @@ function update() {
     const d = dots[i];
     d.clickVx *= (1 - VELOCITY_DECAY);
     d.clickVy *= (1 - VELOCITY_DECAY);
-    const bombFactor = d.special == "bomb" ? 2 : 1;
-    d.x += d.baseVx * bombFactor + d.clickVx + d.repVx + d.magnetVx;
-    d.y += d.baseVy * bombFactor + d.clickVy + d.repVy + d.magnetVy;
+    d.x += d.baseVx + d.clickVx + d.repVx + d.magnetVx;
+    d.y += d.baseVy + d.clickVy + d.repVy + d.magnetVy;
 
     if (d.x < 0 || d.x > MAP_W || d.y < 0 || d.y > MAP_H) {
       d.x = (d.x + MAP_W) % MAP_W;
@@ -289,8 +291,7 @@ function update() {
   }
 
   // Remove expired spawner dots the same way, before connections/indices are
-  // computed for this tick. Any spawns still owed (e.g. because they were
-  // paused while at/above BASE_DOTS) are simply forfeited on expiry.
+  // computed for this tick. Any spawns still owed are simply forfeited on expiry.
   for (let i = dots.length - 1; i >= 0; i--) {
     const d = dots[i];
     if (d.special === 'spawner' && d.owner !== null && currentTick >= d.spawnerUntil) {
@@ -431,10 +432,8 @@ function update() {
 
   // Active spawners produce new dots (owned by the claiming player) around
   // themselves, evenly paced across their active duration. Progress is
-  // tracked by elapsed-time fraction rather than a fixed per-tick rate, so a
-  // spawner that gets paused (map at/above BASE_DOTS) catches up afterward
-  // instead of losing spawns, while never exceeding SPAWNER_TOTAL_SPAWNS or
-  // firing after spawnerUntil.
+  // tracked by elapsed-time fraction rather than a fixed per-tick rate, while
+  // never exceeding SPAWNER_TOTAL_SPAWNS or firing after spawnerUntil.
   const spawnerTotalTicks = Math.max(1, Math.round(SPAWNER_DURATION_MS / (1000 / TICK_RATE)));
   for (const spawner of dots) {
     if (spawner.special !== 'spawner' || spawner.owner === null) continue;
