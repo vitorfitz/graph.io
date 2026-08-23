@@ -27,7 +27,7 @@ const HUB_RADIUS = 500;
 
 // Bomb special dot
 const BOMB_MIN_FUSE_MS = 30000, BOMB_MAX_FUSE_MS = 30000;
-const BOMB_RADIUS = 540, BOMB_FORCE = 36;
+const BOMB_RADIUS = 600, BOMB_FORCE = 40;
 
 // Star special dot: once claimed, fixes the claiming player's stamina at a
 // constant value for a fixed duration.
@@ -323,11 +323,11 @@ function update() {
   }
 
   const newOwners = dots.map((d, i) => {
-    // A magnet dot, once claimed, keeps its owner until it is consumed/removed —
-    // it cannot be captured away by another player during its active window.
-    if (d.special === 'magnet' && d.owner !== null) return d.owner;
-    // A hub dot behaves the same way while its effect is active.
-    if (d.special === 'hub' && d.owner !== null) return d.owner;
+    // Timer-based powers (magnet, hub, star), once claimed, keep their owner
+    // until consumed/removed — they cannot be captured away by another player
+    // during their active window. Without this, an opponent could recapture
+    // the dot mid-effect and reset/restart the timer indefinitely.
+    if ((d.special === 'magnet' || d.special === 'hub' || d.special === 'star') && d.owner !== null) return d.owner;
 
     const counts = connCount[i];
     const owners = Object.keys(counts).map(Number);
