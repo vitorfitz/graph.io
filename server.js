@@ -21,7 +21,7 @@ const MAGNET_MAX_SPEED = 6;
 
 // Hub special dot: once claimed, connects to every dot owned by the same
 // player regardless of distance, for a fixed duration.
-const HUB_DURATION_MS = 10000;
+const HUB_DURATION_MS = 15000;
 
 // Bomb special dot
 const BOMB_MIN_FUSE_MS = 30000, BOMB_MAX_FUSE_MS = 30000;
