@@ -10,16 +10,18 @@ const MIN_DOT_VEL = 0.4, MAX_DOT_VEL = 0.8;
 const REPULSION_DECAY = 1;
 
 // Special dots
-const NORMAL_DOT_RADIUS = 5;
-const SPECIAL_DOT_RADIUS = 15;
 const SPECIAL_DOT_REPULSION_MULT = 1.75;
 const SPECIAL_SPAWN_CHANCE = 1 / 50;
 const MAX_SPECIAL_DOTS = 5;
 
 // Magnet special dot
-const MAGNET_DURATION_MS = 3000;
-const MAGNET_ACCEL = 0.33333;
-const MAGNET_MAX_SPEED = 10;
+const MAGNET_DURATION_MS = 5000;
+const MAGNET_ACCEL = 0.2;
+const MAGNET_MAX_SPEED = 6;
+
+// Bomb special dot
+const BOMB_MIN_FUSE_MS = 30000, BOMB_MAX_FUSE_MS = 30000;
+const BOMB_RADIUS = 540, BOMB_FORCE = 36;
 
 const dots = [];
 const players = new Map(); // id -> { ws, stamina }
@@ -84,9 +86,12 @@ function createDot(x, y, special = null) {
     clickVx: 0, clickVy: 0, repVx: 0, repVy: 0,
     magnetVx: 0, magnetVy: 0, magnetTargetIdx: -1,
     owner: null, claimTick: 0,
-    special, // null | 'magnet'
-    radius: special ? SPECIAL_DOT_RADIUS : NORMAL_DOT_RADIUS,
+    special, // null | 'magnet' | 'bomb'
     magnetUntil: 0, // tick at which this dot's OWN magnet effect (if it is one) expires
+    // Bomb fuse starts counting down immediately upon spawn, regardless of ownership.
+    bombDetonateTick: special === 'bomb'
+      ? currentTick + Math.round((BOMB_MIN_FUSE_MS + Math.random() * (BOMB_MAX_FUSE_MS - BOMB_MIN_FUSE_MS)) / (1000 / TICK_RATE))
+      : 0,
   };
 }
 
@@ -97,8 +102,16 @@ function countSpecialDots() {
 function maybeSpawnSpecialAt(x, y) {
   if (countSpecialDots() >= MAX_SPECIAL_DOTS) return null;
   if (Math.random() >= SPECIAL_SPAWN_CHANCE) return null;
-  // Currently the only special dot type is 'magnet'; pick among future types here.
-  return createDot(x, y, 'magnet');
+  const type = Math.random() < 0.5 ? 'magnet' : 'bomb';
+  return createDot(x, y, type);
+}
+
+function randomEdgePoint() {
+  const side = Math.floor(Math.random() * 4);
+  if (side === 0) return { x: 0, y: Math.random() * MAP_H };
+  if (side === 1) return { x: MAP_W, y: Math.random() * MAP_H };
+  if (side === 2) return { x: Math.random() * MAP_W, y: 0 };
+  return { x: Math.random() * MAP_W, y: MAP_H };
 }
 
 function findSpawnPoint() {
@@ -131,6 +144,22 @@ function getRepulsion(dist, radiusMult = 1) {
   const threshold = 49 * radiusMult;
   if (dist < threshold) f += Math.min((100 * radiusMult ** 2 / dist ** 2), 10 * radiusMult);
   return f;
+}
+
+// Scatters dots around a detonating bomb with a powerful click-like radial
+// force. Unlike a player click, this is not gated by ownership/range and
+// affects every dot (regardless of owner) within BOMB_RADIUS.
+function detonateBomb(bomb) {
+  for (const d of dots) {
+    if (d === bomb) continue;
+    const dx = d.x - bomb.x, dy = d.y - bomb.y;
+    const dist = Math.hypot(dx, dy);
+    if (dist < BOMB_RADIUS && dist > 0) {
+      const force = (1 - dist / BOMB_RADIUS) * BOMB_FORCE;
+      d.clickVx = addForce(d.clickVx, (dx / dist) * force);
+      d.clickVy = addForce(d.clickVy, (dy / dist) * force);
+    }
+  }
 }
 
 function update() {
@@ -172,21 +201,36 @@ function update() {
       d.y = (d.y + MAP_H) % MAP_H;
       d.owner = null;
       d.special = null;
-      d.radius = NORMAL_DOT_RADIUS;
       const special = maybeSpawnSpecialAt(d.x, d.y);
       if (special) {
         d.special = special.special;
-        d.radius = special.radius;
       }
     }
   }
 
   // Remove expired magnet dots now, before connections/indices are computed for
-  // this tick, so the index-based `connections` array stays consistent.
+  // this tick, so the index-based `connections` array stays consistent. Each
+  // consumed magnet dot is replaced by a fresh normal dot spawned on the map edge.
   for (let i = dots.length - 1; i >= 0; i--) {
     const d = dots[i];
     if (d.special === 'magnet' && d.owner !== null && currentTick >= d.magnetUntil) {
       dots.splice(i, 1);
+      const { x, y } = randomEdgePoint();
+      dots.push(createDot(x, y));
+    }
+  }
+
+  // Detonate bombs whose fuse has run out. The fuse counts down regardless of
+  // ownership. On detonation, nearby dots are scattered with a powerful
+  // click-like force, then the bomb dot is consumed and replaced by a fresh
+  // normal dot spawned on the map edge (same pattern as expired magnets).
+  for (let i = dots.length - 1; i >= 0; i--) {
+    const d = dots[i];
+    if (d.special === 'bomb' && currentTick >= d.bombDetonateTick) {
+      detonateBomb(d);
+      dots.splice(i, 1);
+      const { x, y } = randomEdgePoint();
+      dots.push(createDot(x, y));
     }
   }
 
@@ -215,6 +259,10 @@ function update() {
   }
 
   const newOwners = dots.map((d, i) => {
+    // A magnet dot, once claimed, keeps its owner until it is consumed/removed —
+    // it cannot be captured away by another player during its active window.
+    if (d.special === 'magnet' && d.owner !== null) return d.owner;
+
     const counts = connCount[i];
     const owners = Object.keys(counts).map(Number);
     const currentOwner = d.owner;

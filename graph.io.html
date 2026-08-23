@@ -40,7 +40,7 @@
     const TRAIL_ANIM_DURATION = 1000;
 
     // Special dot icons: recolored per-frame to match owner (or unclaimed color)
-    const specialIcons = { magnet: 'sprites/magnet.svg' };
+    const specialIcons = { magnet: 'sprites/magnet.svg', bomb: 'sprites/bomb.svg' };
     const iconImages = {}, iconCanvases = {}; // type -> Image / per-color offscreen canvas cache
     for (const [type, src] of Object.entries(specialIcons)) {
       const img = new Image();
@@ -513,6 +513,18 @@
             ctx.strokeStyle = color;
             ctx.beginPath(); ctx.arc(d.x, d.y, midR, midAngle, endAngle); ctx.stroke();
           }
+        }
+
+        // Bomb countdown: white number in the center showing seconds until detonation.
+        if (d.special === 'bomb') {
+          const secsLeft = Math.max(0, Math.ceil((d.bombDetonateTick - currentTick) / TICK_RATE));
+          ctx.fillStyle = '#fff';
+          ctx.font = 'bold 11px sans-serif';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText(String(secsLeft), d.x, d.y);
+          ctx.textAlign = 'start';
+          ctx.textBaseline = 'alphabetic';
         }
       }
 
