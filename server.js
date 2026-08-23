@@ -12,14 +12,14 @@ const REPULSION_DECAY = 1;
 // Special dots
 const NORMAL_DOT_RADIUS = 5;
 const SPECIAL_DOT_RADIUS = 15;
-const SPECIAL_DOT_REPULSION_MULT = 1.5
-const SPECIAL_SPAWN_CHANCE = 1 / 100;
-const MAX_SPECIAL_DOTS = 3;
+const SPECIAL_DOT_REPULSION_MULT = 1.75;
+const SPECIAL_SPAWN_CHANCE = 1 / 50;
+const MAX_SPECIAL_DOTS = 5;
 
 // Magnet special dot
 const MAGNET_DURATION_MS = 3000;
-const MAGNET_ACCEL = 0.15;
-const MAGNET_MAX_SPEED = 8;
+const MAGNET_ACCEL = 0.33333;
+const MAGNET_MAX_SPEED = 10;
 
 const dots = [];
 const players = new Map(); // id -> { ws, stamina }
