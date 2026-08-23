@@ -239,6 +239,14 @@ function update() {
     d.y += d.baseVy + d.clickVy + d.repVy + d.magnetVy;
 
     if (d.x < 0 || d.x > MAP_W || d.y < 0 || d.y > MAP_H) {
+      // Once the map is over its base dot count, cull non-special dots at the
+      // edge instead of wrapping them, so surplus dots (e.g. from spawner
+      // powerups) eventually drain back down toward BASE_DOTS. Special dots
+      // always wrap normally so their active effects aren't cut short.
+      if (!d.special && dots.length > BASE_DOTS) {
+        dots.splice(i, 1);
+        continue;
+      }
       d.x = (d.x + MAP_W) % MAP_W;
       d.y = (d.y + MAP_H) % MAP_H;
       d.owner = null;
@@ -355,19 +363,17 @@ function update() {
   }
 
   const newOwners = dots.map((d, i) => {
-    // Timer-based powers (magnet, hub, star, spawner), once claimed, keep
-    // their owner until consumed/removed — they cannot be captured away by
-    // another player during their active window. Without this, an opponent
-    // could recapture the dot mid-effect and reset/restart the timer
-    // indefinitely.
-    if ((d.special === 'magnet' || d.special === 'hub' || d.special === 'star' || d.special === 'spawner') && d.owner !== null) return d.owner;
-
     const counts = connCount[i];
     const owners = Object.keys(counts).map(Number);
     const currentOwner = d.owner;
     const currentCount = counts[currentOwner] || 0;
+    const isSpecial = d.special === 'magnet' || d.special === 'hub' || d.special === 'star' || d.special === 'spawner';
 
-    if (owners.length === 0) return currentCount === 0 ? null : currentOwner;
+    // Claimed special dots never decay back to unclaimed just for being
+    // isolated/disconnected — unlike regular dots, they only ever change
+    // hands via an active steal (an opponent majority below), never by
+    // simply drifting away from the network.
+    if (owners.length === 0) return (isSpecial && currentOwner !== null) ? currentOwner : (currentCount === 0 ? null : currentOwner);
 
     const maxCount = Math.max(...Object.values(counts));
     if (maxCount <= currentCount) return currentOwner;
@@ -379,23 +385,37 @@ function update() {
   });
 
   for (let i = 0; i < dots.length; i++) {
-    if (newOwners[i] !== dots[i].owner) {
-      dots[i].claimTick = currentTick;
-      if (dots[i].special === 'magnet' && newOwners[i] !== null) {
-        dots[i].magnetUntil = currentTick + Math.round(MAGNET_DURATION_MS / (1000 / TICK_RATE));
-      }
-      if (dots[i].special === 'hub' && newOwners[i] !== null) {
-        dots[i].hubUntil = currentTick + Math.round(HUB_DURATION_MS / (1000 / TICK_RATE));
-      }
-      if (dots[i].special === 'star' && newOwners[i] !== null) {
-        dots[i].starUntil = currentTick + Math.round(STAR_DURATION_MS / (1000 / TICK_RATE));
-      }
-      if (dots[i].special === 'spawner' && newOwners[i] !== null) {
-        dots[i].spawnerUntil = currentTick + Math.round(SPAWNER_DURATION_MS / (1000 / TICK_RATE));
-        dots[i].spawnerSpawned = 0;
+    const d = dots[i];
+    if (newOwners[i] !== d.owner) {
+      d.claimTick = currentTick;
+      // Timer-based powers (magnet, hub, star, spawner) can now be stolen by
+      // an opponent mid-effect (e.g. when they out-connect the current owner
+      // nearby), same as regular dots. But if the effect is already running
+      // (this is a steal, not a fresh claim), don't reset/restart its timer
+      // — the new owner just inherits the remaining duration.
+      const alreadyActive =
+        (d.special === 'magnet' && d.owner !== null && currentTick < d.magnetUntil) ||
+        (d.special === 'hub' && d.owner !== null && currentTick < d.hubUntil) ||
+        (d.special === 'star' && d.owner !== null && currentTick < d.starUntil) ||
+        (d.special === 'spawner' && d.owner !== null && currentTick < d.spawnerUntil);
+
+      if (!alreadyActive) {
+        if (d.special === 'magnet' && newOwners[i] !== null) {
+          d.magnetUntil = currentTick + Math.round(MAGNET_DURATION_MS / (1000 / TICK_RATE));
+        }
+        if (d.special === 'hub' && newOwners[i] !== null) {
+          d.hubUntil = currentTick + Math.round(HUB_DURATION_MS / (1000 / TICK_RATE));
+        }
+        if (d.special === 'star' && newOwners[i] !== null) {
+          d.starUntil = currentTick + Math.round(STAR_DURATION_MS / (1000 / TICK_RATE));
+        }
+        if (d.special === 'spawner' && newOwners[i] !== null) {
+          d.spawnerUntil = currentTick + Math.round(SPAWNER_DURATION_MS / (1000 / TICK_RATE));
+          d.spawnerSpawned = 0;
+        }
       }
     }
-    dots[i].owner = newOwners[i];
+    d.owner = newOwners[i];
   }
 
   // Apply magnet attraction: dots owned by a player whose magnet dot is active
