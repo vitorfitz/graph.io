@@ -6,13 +6,13 @@ const CONNECT_DIST = 50, DISCONNECT_DIST = 50;
 const SPAWN_DOTS = 5, SPAWN_MARGIN = 200, SPAWN_MIN_DIST = 300, SPAWN_SPREAD = 50;
 const CLICK_RADIUS = 180, CLICK_FORCE = 12, VELOCITY_DECAY = 0.05, CLICK_RANGE = 200;
 const MAX_STAMINA = 100, CLICK_COST = 15, DRAG_COST_PER_DIST = 0.15;
-const MIN_DOT_VEL = 0.4, MAX_DOT_VEL = 0.8;
+const MIN_DOT_VEL = 0.5, MAX_DOT_VEL = 1;
 const REPULSION_DECAY = 1;
 
 // Special dots
 const SPECIAL_DOT_REPULSION_MULT = 1.6;
-const SPECIAL_SPAWN_CHANCE = 1 / 40;
-const MAX_SPECIAL_DOTS = 6;
+const SPECIAL_SPAWN_CHANCE = 1 / 25;
+const MAX_SPECIAL_DOTS = 10;
 const SPECIAL_TYPE_WEIGHTS = { magnet: 1, bomb: 3, hub: 1, star: 1 };
 
 // Magnet special dot
@@ -22,17 +22,17 @@ const MAGNET_MAX_SPEED = 6;
 
 // Hub special dot: once claimed, connects to every dot (regardless of owner)
 // within HUB_RADIUS, for a fixed duration.
-const HUB_DURATION_MS = 15000;
-const HUB_RADIUS = 500;
+const HUB_DURATION_MS = 10000;
+const HUB_RADIUS = 400;
 
 // Bomb special dot
-const BOMB_MIN_FUSE_MS = 30000, BOMB_MAX_FUSE_MS = 30000;
+const BOMB_MIN_FUSE_MS = 10000, BOMB_MAX_FUSE_MS = 20000;
 const BOMB_RADIUS = 600, BOMB_FORCE = 40;
 
 // Star special dot: once claimed, fixes the claiming player's stamina at a
 // constant value for a fixed duration.
-const STAR_DURATION_MS = 8000;
-const STAR_STAMINA = 200;
+const STAR_DURATION_MS = 6500;
+const STAR_STAMINA = 150;
 
 const dots = [];
 const players = new Map(); // id -> { ws, stamina }
@@ -215,8 +215,9 @@ function update() {
     const d = dots[i];
     d.clickVx *= (1 - VELOCITY_DECAY);
     d.clickVy *= (1 - VELOCITY_DECAY);
-    d.x += d.baseVx + d.clickVx + d.repVx + d.magnetVx;
-    d.y += d.baseVy + d.clickVy + d.repVy + d.magnetVy;
+    const bombFactor=d.special=="bomb"? 2: 1;
+    d.x += d.baseVx*bombFactor + d.clickVx + d.repVx + d.magnetVx;
+    d.y += d.baseVy*bombFactor + d.clickVy + d.repVy + d.magnetVy;
 
     if (d.x < 0 || d.x > MAP_W || d.y < 0 || d.y > MAP_H) {
       if (dots.length > BASE_DOTS) { dots.splice(i, 1); continue; }
