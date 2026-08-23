@@ -43,7 +43,8 @@
     const specialIcons = {
       magnet: { url: 'sprites/magnet.svg', scale: 1.4 },
       bomb: { url: 'sprites/bomb.svg', scale: 1.8 },
-      hub: { url: 'sprites/hub.svg', scale: 1.8 }
+      hub: { url: 'sprites/hub.svg', scale: 1.8 },
+      star: { url: 'sprites/star.svg', scale: 2 }
     };
     const iconImages = {}, iconCanvases = {}; // type -> Image / per-color offscreen canvas cache
     for (const [type, props] of Object.entries(specialIcons)) {
@@ -75,7 +76,7 @@
     }
 
     let myId = null, MAP_W = 3000, MAP_H = 2000, CLICK_RANGE = 200;
-    let TICK_RATE = 60, MAGNET_DURATION_MS = 5000, HUB_DURATION_MS = 15000;
+    let TICK_RATE = 60, MAGNET_DURATION_MS = 5000, HUB_DURATION_MS = 15000, STAR_DURATION_MS = 10000;
     let dots = [], connections = [], stamina = 100, currentTick = 0;
     let camX = 0, camY = 0, zoom = 1, camInitialized = false;
 
@@ -96,6 +97,7 @@
         myId = msg.id; MAP_W = msg.MAP_W; MAP_H = msg.MAP_H; CLICK_RANGE = msg.CLICK_RANGE;
         TICK_RATE = msg.TICK_RATE || TICK_RATE; MAGNET_DURATION_MS = msg.MAGNET_DURATION_MS || MAGNET_DURATION_MS;
         HUB_DURATION_MS = msg.HUB_DURATION_MS || HUB_DURATION_MS;
+        STAR_DURATION_MS = msg.STAR_DURATION_MS || STAR_DURATION_MS;
       }
       else if (msg.type === 'state') { dots = msg.dots; connections = msg.connections; stamina = msg.stamina; currentTick = msg.tick; }
       else if (msg.type === 'click') handleRemoteClick(msg);
@@ -487,6 +489,7 @@
       const PROGRESS_RING_INNER = 11, PROGRESS_RING_OUTER = 14;
       const magnetTotalTicks = Math.max(1, Math.round(MAGNET_DURATION_MS / (1000 / TICK_RATE)));
       const hubTotalTicks = Math.max(1, Math.round(HUB_DURATION_MS / (1000 / TICK_RATE)));
+      const starTotalTicks = Math.max(1, Math.round(STAR_DURATION_MS / (1000 / TICK_RATE)));
       for (const d of dots) {
         const color = d.owner !== null ? getColor(d.owner) : UNCLAIMED_COLOR;
         const r = d.special ? SPECIAL_DOT_RADIUS : DOT_RADIUS;
@@ -508,11 +511,12 @@
           ctx.beginPath(); ctx.arc(d.x, d.y, r, 0, Math.PI * 2); ctx.fill();
         }
 
-        // Countdown ring: depletes clockwise from gray to black as the magnet's
-        // or hub's active effect (once claimed) runs out.
+        // Countdown ring: depletes clockwise from gray to black as the magnet's,
+        // hub's, or star's active effect (once claimed) runs out.
         let untilTick = null, totalTicks = null;
         if (d.special === 'magnet') { untilTick = d.magnetUntil; totalTicks = magnetTotalTicks; }
         else if (d.special === 'hub') { untilTick = d.hubUntil; totalTicks = hubTotalTicks; }
+        else if (d.special === 'star') { untilTick = d.starUntil; totalTicks = starTotalTicks; }
 
         if (untilTick !== null && d.owner !== null && untilTick > currentTick) {
           const remaining = Math.max(0, Math.min(1, (untilTick - currentTick) / totalTicks));
@@ -566,7 +570,7 @@
       ctx.fillStyle = '#fff';
       ctx.font = '20px sans-serif';
       ctx.fillText(`Score: ${mine.length}`, 10, 30);
-      ctx.fillText(`Stamina: ${Math.round(stamina)}`, 10, 55);
+      // ctx.fillText(`Stamina: ${Math.round(stamina)}`, 10, 55);
 
       requestAnimationFrame(render);
     }

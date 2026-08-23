@@ -11,9 +11,9 @@ const REPULSION_DECAY = 1;
 
 // Special dots
 const SPECIAL_DOT_REPULSION_MULT = 1.6;
-const SPECIAL_SPAWN_CHANCE = 1 / 50;
-const MAX_SPECIAL_DOTS = 10;
-const SPECIAL_TYPE_WEIGHTS = { magnet: 1, bomb: 2, hub: 1 };
+const SPECIAL_SPAWN_CHANCE = 1 / 40;
+const MAX_SPECIAL_DOTS = 6;
+const SPECIAL_TYPE_WEIGHTS = { magnet: 1, bomb: 3, hub: 1, star: 1 };
 
 // Magnet special dot
 const MAGNET_DURATION_MS = 3000;
@@ -28,6 +28,11 @@ const HUB_RADIUS = 500;
 // Bomb special dot
 const BOMB_MIN_FUSE_MS = 30000, BOMB_MAX_FUSE_MS = 30000;
 const BOMB_RADIUS = 540, BOMB_FORCE = 36;
+
+// Star special dot: once claimed, fixes the claiming player's stamina at a
+// constant value for a fixed duration.
+const STAR_DURATION_MS = 8000;
+const STAR_STAMINA = 200;
 
 const dots = [];
 const players = new Map(); // id -> { ws, stamina }
@@ -92,9 +97,10 @@ function createDot(x, y, special = null) {
     clickVx: 0, clickVy: 0, repVx: 0, repVy: 0,
     magnetVx: 0, magnetVy: 0, magnetTargetIdx: -1,
     owner: null, claimTick: 0,
-    special, // null | 'magnet' | 'bomb' | 'hub'
+    special, // null | 'magnet' | 'bomb' | 'hub' | 'star'
     magnetUntil: 0, // tick at which this dot's OWN magnet effect (if it is one) expires
     hubUntil: 0, // tick at which this dot's OWN hub effect (if it is one) expires
+    starUntil: 0, // tick at which this dot's OWN star effect (if it is one) expires
     // Bomb fuse starts counting down immediately upon spawn, regardless of ownership.
     bombDetonateTick: special === 'bomb'
       ? currentTick + Math.round((BOMB_MIN_FUSE_MS + Math.random() * (BOMB_MAX_FUSE_MS - BOMB_MIN_FUSE_MS)) / (1000 / TICK_RATE))
@@ -224,6 +230,7 @@ function update() {
         d.bombDetonateTick = special.bombDetonateTick;
         d.magnetUntil = special.magnetUntil;
         d.hubUntil = special.hubUntil;
+        d.starUntil = special.starUntil;
       }
     }
   }
@@ -245,6 +252,17 @@ function update() {
   for (let i = dots.length - 1; i >= 0; i--) {
     const d = dots[i];
     if (d.special === 'hub' && d.owner !== null && currentTick >= d.hubUntil) {
+      dots.splice(i, 1);
+      const { x, y } = randomEdgePoint();
+      dots.push(createDot(x, y));
+    }
+  }
+
+  // Remove expired star dots the same way, before connections/indices are
+  // computed for this tick.
+  for (let i = dots.length - 1; i >= 0; i--) {
+    const d = dots[i];
+    if (d.special === 'star' && d.owner !== null && currentTick >= d.starUntil) {
       dots.splice(i, 1);
       const { x, y } = randomEdgePoint();
       dots.push(createDot(x, y));
@@ -336,6 +354,9 @@ function update() {
       if (dots[i].special === 'hub' && newOwners[i] !== null) {
         dots[i].hubUntil = currentTick + Math.round(HUB_DURATION_MS / (1000 / TICK_RATE));
       }
+      if (dots[i].special === 'star' && newOwners[i] !== null) {
+        dots[i].starUntil = currentTick + Math.round(STAR_DURATION_MS / (1000 / TICK_RATE));
+      }
     }
     dots[i].owner = newOwners[i];
   }
@@ -372,8 +393,22 @@ function update() {
     }
   }
 
+  // Determine which players currently have an active star effect: their
+  // stamina is fixed at STAR_STAMINA for the duration instead of regenerating
+  // normally.
+  const starredPlayers = new Set();
+  for (const d of dots) {
+    if (d.special === 'star' && d.owner !== null && currentTick < d.starUntil) {
+      starredPlayers.add(d.owner);
+    }
+  }
+
   for (const [id, player] of players) {
-    player.stamina = Math.min(MAX_STAMINA, player.stamina + (MAX_STAMINA - player.stamina) * 0.1);
+    if (starredPlayers.has(id)) {
+      player.stamina = STAR_STAMINA;
+    } else {
+      player.stamina = Math.min(MAX_STAMINA, player.stamina + (MAX_STAMINA - player.stamina) * 0.1);
+    }
     player.holding = false;
 
     if (!dots.some(d => d.owner === id)) respawnPlayer(id);
@@ -457,7 +492,7 @@ wss.on('connection', ws => {
   const id = nextPlayerId++;
   players.set(id, { ws, stamina: MAX_STAMINA, holding: false });
   spawnPlayer(id);
-  ws.send(JSON.stringify({ type: 'init', id, MAP_W, MAP_H, CLICK_RANGE, TICK_RATE, MAGNET_DURATION_MS, HUB_DURATION_MS }));
+  ws.send(JSON.stringify({ type: 'init', id, MAP_W, MAP_H, CLICK_RANGE, TICK_RATE, MAGNET_DURATION_MS, HUB_DURATION_MS, STAR_DURATION_MS }));
   ws.on('message', data => {
     const msg = JSON.parse(data);
     if (msg.type === 'click') handleClick(id, msg.x, msg.y, msg.px, msg.py);
