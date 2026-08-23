@@ -138,8 +138,8 @@ function maybeSpawnSpecialAt(x, y) {
   if (countSpecialDots() >= MAX_SPECIAL_DOTS) return null;
   if (Math.random() >= SPECIAL_SPAWN_CHANCE) return null;
   // The spawner power spawns additional dots, so don't let it appear once the
-  // map has already reached (or exceeded) the base dot count.
-  const exclude = dots.length >= BASE_DOTS ? ['spawner'] : [];
+  // map has already exceeded the base dot count.
+  const exclude = dots.length > BASE_DOTS ? ['spawner'] : [];
   return createDot(x, y, pickWeightedSpecialType(exclude));
 }
 
