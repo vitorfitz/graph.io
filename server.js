@@ -9,6 +9,18 @@ const MAX_STAMINA = 100, CLICK_COST = 15, DRAG_COST_PER_DIST = 0.15;
 const MIN_DOT_VEL = 0.4, MAX_DOT_VEL = 0.8;
 const REPULSION_DECAY = 1;
 
+// Special dots
+const NORMAL_DOT_RADIUS = 5;
+const SPECIAL_DOT_RADIUS = 15;
+const SPECIAL_DOT_REPULSION_MULT = 1.5
+const SPECIAL_SPAWN_CHANCE = 1 / 100;
+const MAX_SPECIAL_DOTS = 3;
+
+// Magnet special dot
+const MAGNET_DURATION_MS = 3000;
+const MAGNET_ACCEL = 0.15;
+const MAGNET_MAX_SPEED = 8;
+
 const dots = [];
 const players = new Map(); // id -> { ws, stamina }
 const activeConnections = new Set();
@@ -63,10 +75,30 @@ for (let i = 0; i < BASE_DOTS; i++) {
   dots.push(createDot(Math.random() * MAP_W, Math.random() * MAP_H));
 }
 
-function createDot(x, y) {
+function createDot(x, y, special = null) {
   const theta = 2 * Math.PI * Math.random();
   const vel = MIN_DOT_VEL + Math.random() * (MAX_DOT_VEL - MIN_DOT_VEL);
-  return { x, y, baseVx: vel * Math.cos(theta), baseVy: vel * Math.sin(theta), clickVx: 0, clickVy: 0, repVx: 0, repVy: 0, owner: null, claimTick: 0 };
+  return {
+    x, y,
+    baseVx: vel * Math.cos(theta), baseVy: vel * Math.sin(theta),
+    clickVx: 0, clickVy: 0, repVx: 0, repVy: 0,
+    magnetVx: 0, magnetVy: 0, magnetTargetIdx: -1,
+    owner: null, claimTick: 0,
+    special, // null | 'magnet'
+    radius: special ? SPECIAL_DOT_RADIUS : NORMAL_DOT_RADIUS,
+    magnetUntil: 0, // tick at which this dot's OWN magnet effect (if it is one) expires
+  };
+}
+
+function countSpecialDots() {
+  return dots.reduce((n, d) => n + (d.special ? 1 : 0), 0);
+}
+
+function maybeSpawnSpecialAt(x, y) {
+  if (countSpecialDots() >= MAX_SPECIAL_DOTS) return null;
+  if (Math.random() >= SPECIAL_SPAWN_CHANCE) return null;
+  // Currently the only special dot type is 'magnet'; pick among future types here.
+  return createDot(x, y, 'magnet');
 }
 
 function findSpawnPoint() {
@@ -94,9 +126,10 @@ function removePlayer(id) {
   players.delete(id);
 }
 
-function getRepulsion(dist) {
+function getRepulsion(dist, radiusMult = 1) {
   let f = 0;
-  if (dist < 49) f += Math.min((100 / dist ** 2), 10);
+  const threshold = 49 * radiusMult;
+  if (dist < threshold) f += Math.min((100 * radiusMult ** 2 / dist ** 2), 10 * radiusMult);
   return f;
 }
 
@@ -114,7 +147,11 @@ function update() {
   for (const [i, j] of getNearbyPairs()) {
     const dx = dots[j].x - dots[i].x, dy = dots[j].y - dots[i].y;
     const dist = Math.hypot(dx, dy);
-    const force = getRepulsion(dist);
+    const radiusMult = Math.max(
+      dots[i].special ? SPECIAL_DOT_REPULSION_MULT : 1,
+      dots[j].special ? SPECIAL_DOT_REPULSION_MULT : 1
+    );
+    const force = getRepulsion(dist, radiusMult);
     if (force > 0) {
       const fx = (dx / dist) * force, fy = (dy / dist) * force;
       dots[i].repVx -= fx; dots[i].repVy -= fy;
@@ -126,14 +163,30 @@ function update() {
     const d = dots[i];
     d.clickVx *= (1 - VELOCITY_DECAY);
     d.clickVy *= (1 - VELOCITY_DECAY);
-    d.x += d.baseVx + d.clickVx + d.repVx;
-    d.y += d.baseVy + d.clickVy + d.repVy;
+    d.x += d.baseVx + d.clickVx + d.repVx + d.magnetVx;
+    d.y += d.baseVy + d.clickVy + d.repVy + d.magnetVy;
 
     if (d.x < 0 || d.x > MAP_W || d.y < 0 || d.y > MAP_H) {
       if (dots.length > BASE_DOTS) { dots.splice(i, 1); continue; }
       d.x = (d.x + MAP_W) % MAP_W;
       d.y = (d.y + MAP_H) % MAP_H;
       d.owner = null;
+      d.special = null;
+      d.radius = NORMAL_DOT_RADIUS;
+      const special = maybeSpawnSpecialAt(d.x, d.y);
+      if (special) {
+        d.special = special.special;
+        d.radius = special.radius;
+      }
+    }
+  }
+
+  // Remove expired magnet dots now, before connections/indices are computed for
+  // this tick, so the index-based `connections` array stays consistent.
+  for (let i = dots.length - 1; i >= 0; i--) {
+    const d = dots[i];
+    if (d.special === 'magnet' && d.owner !== null && currentTick >= d.magnetUntil) {
+      dots.splice(i, 1);
     }
   }
 
@@ -179,8 +232,45 @@ function update() {
   });
 
   for (let i = 0; i < dots.length; i++) {
-    if (newOwners[i] !== dots[i].owner) dots[i].claimTick = currentTick;
+    if (newOwners[i] !== dots[i].owner) {
+      dots[i].claimTick = currentTick;
+      if (dots[i].special === 'magnet' && newOwners[i] !== null) {
+        dots[i].magnetUntil = currentTick + Math.round(MAGNET_DURATION_MS / (1000 / TICK_RATE));
+      }
+    }
     dots[i].owner = newOwners[i];
+  }
+
+  // Apply magnet attraction: dots owned by a player whose magnet dot is active
+  // accelerate toward that magnet dot at a constant rate, up to a max speed,
+  // independent of distance. Expiry/removal of the magnet dot itself is handled
+  // earlier in the tick (before connections are computed) to keep index-based
+  // `connections` consistent.
+  for (const magnet of dots) {
+    if (magnet.special !== 'magnet' || magnet.owner === null) continue;
+    if (currentTick >= magnet.magnetUntil) continue;
+
+    for (const d of dots) {
+      if (d === magnet || d.owner !== magnet.owner) continue;
+      const dx = magnet.x - d.x, dy = magnet.y - d.y;
+      const dist = Math.hypot(dx, dy);
+      if (dist < 1) continue;
+      d.magnetVx += (dx / dist) * MAGNET_ACCEL;
+      d.magnetVy += (dy / dist) * MAGNET_ACCEL;
+      const speed = Math.hypot(d.magnetVx, d.magnetVy);
+      if (speed > MAGNET_MAX_SPEED) {
+        d.magnetVx = (d.magnetVx / speed) * MAGNET_MAX_SPEED;
+        d.magnetVy = (d.magnetVy / speed) * MAGNET_MAX_SPEED;
+      }
+    }
+  }
+
+  for (const d of dots) {
+    if (d.magnetVx || d.magnetVy) {
+      d.magnetVx *= (1 - VELOCITY_DECAY);
+      d.magnetVy *= (1 - VELOCITY_DECAY);
+      if (Math.hypot(d.magnetVx, d.magnetVy) < 0.01) { d.magnetVx = 0; d.magnetVy = 0; }
+    }
   }
 
   for (const [id, player] of players) {
@@ -189,7 +279,7 @@ function update() {
 
     if (!dots.some(d => d.owner === id)) respawnPlayer(id);
     if (player.ws.readyState === WebSocket.OPEN) {
-      player.ws.send(JSON.stringify({ type: 'state', dots, connections, stamina: player.stamina }));
+      player.ws.send(JSON.stringify({ type: 'state', dots, connections, stamina: player.stamina, tick: currentTick }));
     }
   }
 }
@@ -268,7 +358,7 @@ wss.on('connection', ws => {
   const id = nextPlayerId++;
   players.set(id, { ws, stamina: MAX_STAMINA, holding: false });
   spawnPlayer(id);
-  ws.send(JSON.stringify({ type: 'init', id, MAP_W, MAP_H, CLICK_RANGE }));
+  ws.send(JSON.stringify({ type: 'init', id, MAP_W, MAP_H, CLICK_RANGE, TICK_RATE, MAGNET_DURATION_MS }));
   ws.on('message', data => {
     const msg = JSON.parse(data);
     if (msg.type === 'click') handleClick(id, msg.x, msg.y, msg.px, msg.py);

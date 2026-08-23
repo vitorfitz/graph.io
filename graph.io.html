@@ -35,11 +35,44 @@
     const MAX_SCREEN_FILL = 0.6, MIN_ZOOM = 0.5, MAX_ZOOM = 1;
     const HOLD_CLICK_INTERVAL = 1000 / 60;
     const DOT_RADIUS = 6;
+    const SPECIAL_DOT_RADIUS = 15;
     const CLICK_ANIM_DURATION = 727;
     const TRAIL_ANIM_DURATION = 1000;
 
+    // Special dot icons: recolored per-frame to match owner (or unclaimed color)
+    const specialIcons = { magnet: 'sprites/magnet.svg' };
+    const iconImages = {}, iconCanvases = {}; // type -> Image / per-color offscreen canvas cache
+    for (const [type, src] of Object.entries(specialIcons)) {
+      const img = new Image();
+      img.src = src;
+      iconImages[type] = img;
+      iconCanvases[type] = {}; // colorKey -> offscreen canvas
+    }
+
+    // Returns an offscreen canvas with the icon recolored to `color`, cached per type+color
+    function getColoredIcon(type, color) {
+      const img = iconImages[type];
+      if (!img || !img.complete || img.naturalWidth === 0) return null;
+      const cache = iconCanvases[type];
+      if (cache[color]) return cache[color];
+
+      const size = 64;
+      const off = document.createElement('canvas');
+      off.width = size; off.height = size;
+      const octx = off.getContext('2d');
+      octx.drawImage(img, 0, 0, size, size);
+      octx.globalCompositeOperation = 'source-in';
+      octx.fillStyle = color;
+      octx.fillRect(0, 0, size, size);
+      octx.globalCompositeOperation = 'source-over';
+
+      cache[color] = off;
+      return off;
+    }
+
     let myId = null, MAP_W = 3000, MAP_H = 2000, CLICK_RANGE = 200;
-    let dots = [], connections = [], stamina = 100;
+    let TICK_RATE = 60, MAGNET_DURATION_MS = 3000;
+    let dots = [], connections = [], stamina = 100, currentTick = 0;
     let camX = 0, camY = 0, zoom = 1, camInitialized = false;
 
     function getHue(id) {
@@ -51,12 +84,15 @@
       return id === myId ? `rgba(0, 187, 0, ${alpha})` : `hsla(${hue}, 70%, 50%, ${alpha})`;
     }
 
-    const ws = new WebSocket('ws://localhost:8080');
+    const ws = new WebSocket(`ws://${location.hostname}:8080`);
 
     ws.onmessage = e => {
       const msg = JSON.parse(e.data);
-      if (msg.type === 'init') { myId = msg.id; MAP_W = msg.MAP_W; MAP_H = msg.MAP_H; CLICK_RANGE = msg.CLICK_RANGE; }
-      else if (msg.type === 'state') { dots = msg.dots; connections = msg.connections; stamina = msg.stamina; }
+      if (msg.type === 'init') {
+        myId = msg.id; MAP_W = msg.MAP_W; MAP_H = msg.MAP_H; CLICK_RANGE = msg.CLICK_RANGE;
+        TICK_RATE = msg.TICK_RATE || TICK_RATE; MAGNET_DURATION_MS = msg.MAGNET_DURATION_MS || MAGNET_DURATION_MS;
+      }
+      else if (msg.type === 'state') { dots = msg.dots; connections = msg.connections; stamina = msg.stamina; currentTick = msg.tick; }
       else if (msg.type === 'click') handleRemoteClick(msg);
     };
 
@@ -433,9 +469,51 @@
       }
 
       // Dots
+      const MAGNET_RING_INNER = 11, MAGNET_RING_OUTER = 14;
+      const magnetTotalTicks = Math.max(1, Math.round(MAGNET_DURATION_MS / (1000 / TICK_RATE)));
       for (const d of dots) {
-        ctx.fillStyle = d.owner !== null ? getColor(d.owner) : UNCLAIMED_COLOR;
-        ctx.beginPath(); ctx.arc(d.x, d.y, DOT_RADIUS, 0, Math.PI * 2); ctx.fill();
+        const isMagnet = d.special === 'magnet';
+        const color = d.owner !== null ? getColor(d.owner) : UNCLAIMED_COLOR;
+        const r = d.special ? SPECIAL_DOT_RADIUS : DOT_RADIUS;
+
+        if (d.special && iconImages[d.special]) {
+          const icon = getColoredIcon(d.special, isMagnet ? '#000000' : color);
+          if (icon) {
+            const size = r * 1.4;
+            ctx.fillStyle = color;
+            ctx.beginPath(); ctx.arc(d.x, d.y, r, 0, Math.PI * 2); ctx.fill();
+            ctx.drawImage(icon, d.x - size / 2, d.y - size / 2, size, size);
+          } else {
+            // Icon not loaded yet — fall back to a plain circle
+            ctx.fillStyle = color;
+            ctx.beginPath(); ctx.arc(d.x, d.y, r, 0, Math.PI * 2); ctx.fill();
+          }
+        } else {
+          ctx.fillStyle = color;
+          ctx.beginPath(); ctx.arc(d.x, d.y, r, 0, Math.PI * 2); ctx.fill();
+        }
+
+        // Countdown ring: depletes clockwise from gray to black as the magnet's
+        // active effect (once claimed) runs out.
+        if (isMagnet && d.owner !== null && d.magnetUntil > currentTick) {
+          const remaining = Math.max(0, Math.min(1, (d.magnetUntil - currentTick) / magnetTotalTicks));
+          const elapsed = 1 - remaining;
+          const startAngle = -Math.PI / 2; // 12 o'clock
+          const midAngle = startAngle + elapsed * Math.PI * 2;
+          const endAngle = startAngle + Math.PI * 2;
+          const midR = (MAGNET_RING_INNER + MAGNET_RING_OUTER) / 2;
+          const ringWidth = MAGNET_RING_OUTER - MAGNET_RING_INNER;
+
+          ctx.lineWidth = ringWidth;
+          if (elapsed > 0) {
+            ctx.strokeStyle = '#111';
+            ctx.beginPath(); ctx.arc(d.x, d.y, midR, startAngle, midAngle); ctx.stroke();
+          }
+          if (remaining > 0) {
+            ctx.strokeStyle = color;
+            ctx.beginPath(); ctx.arc(d.x, d.y, midR, midAngle, endAngle); ctx.stroke();
+          }
+        }
       }
 
       // Click effects (rings)
@@ -456,7 +534,7 @@
       ctx.fillStyle = '#fff';
       ctx.font = '20px sans-serif';
       ctx.fillText(`Score: ${mine.length}`, 10, 30);
-      ctx.fillText(`Stamina: ${Math.round(stamina)}`, 10, 55);
+      // ctx.fillText(`Stamina: ${Math.round(stamina)}`, 10, 55);
 
       requestAnimationFrame(render);
     }
