@@ -10,7 +10,7 @@ const MIN_DOT_VEL = 0.4, MAX_DOT_VEL = 0.8;
 const REPULSION_DECAY = 1;
 
 // Special dots
-const SPECIAL_DOT_REPULSION_MULT = 1.75;
+const SPECIAL_DOT_REPULSION_MULT = 1.6;
 const SPECIAL_SPAWN_CHANCE = 1 / 50;
 const MAX_SPECIAL_DOTS = 5;
 
@@ -18,6 +18,10 @@ const MAX_SPECIAL_DOTS = 5;
 const MAGNET_DURATION_MS = 5000;
 const MAGNET_ACCEL = 0.2;
 const MAGNET_MAX_SPEED = 6;
+
+// Hub special dot: once claimed, connects to every dot owned by the same
+// player regardless of distance, for a fixed duration.
+const HUB_DURATION_MS = 10000;
 
 // Bomb special dot
 const BOMB_MIN_FUSE_MS = 30000, BOMB_MAX_FUSE_MS = 30000;
@@ -86,8 +90,9 @@ function createDot(x, y, special = null) {
     clickVx: 0, clickVy: 0, repVx: 0, repVy: 0,
     magnetVx: 0, magnetVy: 0, magnetTargetIdx: -1,
     owner: null, claimTick: 0,
-    special, // null | 'magnet' | 'bomb'
+    special, // null | 'magnet' | 'bomb' | 'hub'
     magnetUntil: 0, // tick at which this dot's OWN magnet effect (if it is one) expires
+    hubUntil: 0, // tick at which this dot's OWN hub effect (if it is one) expires
     // Bomb fuse starts counting down immediately upon spawn, regardless of ownership.
     bombDetonateTick: special === 'bomb'
       ? currentTick + Math.round((BOMB_MIN_FUSE_MS + Math.random() * (BOMB_MAX_FUSE_MS - BOMB_MIN_FUSE_MS)) / (1000 / TICK_RATE))
@@ -102,7 +107,8 @@ function countSpecialDots() {
 function maybeSpawnSpecialAt(x, y) {
   if (countSpecialDots() >= MAX_SPECIAL_DOTS) return null;
   if (Math.random() >= SPECIAL_SPAWN_CHANCE) return null;
-  const type = Math.random() < 0.5 ? 'magnet' : 'bomb';
+  const types = ['magnet', 'bomb', 'hub'];
+  const type = types[Math.floor(Math.random() * types.length)];
   return createDot(x, y, type);
 }
 
@@ -206,6 +212,7 @@ function update() {
         d.special = special.special;
         d.bombDetonateTick = special.bombDetonateTick;
         d.magnetUntil = special.magnetUntil;
+        d.hubUntil = special.hubUntil;
       }
     }
   }
@@ -216,6 +223,17 @@ function update() {
   for (let i = dots.length - 1; i >= 0; i--) {
     const d = dots[i];
     if (d.special === 'magnet' && d.owner !== null && currentTick >= d.magnetUntil) {
+      dots.splice(i, 1);
+      const { x, y } = randomEdgePoint();
+      dots.push(createDot(x, y));
+    }
+  }
+
+  // Remove expired hub dots the same way, before connections/indices are
+  // computed for this tick.
+  for (let i = dots.length - 1; i >= 0; i--) {
+    const d = dots[i];
+    if (d.special === 'hub' && d.owner !== null && currentTick >= d.hubUntil) {
       dots.splice(i, 1);
       const { x, y } = randomEdgePoint();
       dots.push(createDot(x, y));
@@ -253,6 +271,18 @@ function update() {
   activeConnections.clear();
   for (const k of newActiveConnections) activeConnections.add(k);
 
+  // Active hubs connect to every dot owned by the same player, regardless of
+  // distance. These are added as real connections (not just visual) so they
+  // also feed into the capture logic below, same as proximity connections.
+  for (let h = 0; h < dots.length; h++) {
+    const hub = dots[h];
+    if (hub.special !== 'hub' || hub.owner === null || currentTick >= hub.hubUntil) continue;
+    for (let i = 0; i < dots.length; i++) {
+      if (i === h || dots[i].owner !== hub.owner) continue;
+      connections.push([Math.min(h, i), Math.max(h, i)]);
+    }
+  }
+
   const connCount = dots.map(() => ({}));
   for (const [i, j] of connections) {
     const oi = dots[i].owner, oj = dots[j].owner;
@@ -264,6 +294,8 @@ function update() {
     // A magnet dot, once claimed, keeps its owner until it is consumed/removed —
     // it cannot be captured away by another player during its active window.
     if (d.special === 'magnet' && d.owner !== null) return d.owner;
+    // A hub dot behaves the same way while its effect is active.
+    if (d.special === 'hub' && d.owner !== null) return d.owner;
 
     const counts = connCount[i];
     const owners = Object.keys(counts).map(Number);
@@ -286,6 +318,9 @@ function update() {
       dots[i].claimTick = currentTick;
       if (dots[i].special === 'magnet' && newOwners[i] !== null) {
         dots[i].magnetUntil = currentTick + Math.round(MAGNET_DURATION_MS / (1000 / TICK_RATE));
+      }
+      if (dots[i].special === 'hub' && newOwners[i] !== null) {
+        dots[i].hubUntil = currentTick + Math.round(HUB_DURATION_MS / (1000 / TICK_RATE));
       }
     }
     dots[i].owner = newOwners[i];
@@ -408,7 +443,7 @@ wss.on('connection', ws => {
   const id = nextPlayerId++;
   players.set(id, { ws, stamina: MAX_STAMINA, holding: false });
   spawnPlayer(id);
-  ws.send(JSON.stringify({ type: 'init', id, MAP_W, MAP_H, CLICK_RANGE, TICK_RATE, MAGNET_DURATION_MS }));
+  ws.send(JSON.stringify({ type: 'init', id, MAP_W, MAP_H, CLICK_RANGE, TICK_RATE, MAGNET_DURATION_MS, HUB_DURATION_MS }));
   ws.on('message', data => {
     const msg = JSON.parse(data);
     if (msg.type === 'click') handleClick(id, msg.x, msg.y, msg.px, msg.py);

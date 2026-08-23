@@ -42,7 +42,8 @@
     // Special dot icons: recolored per-frame to match owner (or unclaimed color)
     const specialIcons = {
       magnet: { url: 'sprites/magnet.svg', scale: 1.4 },
-      bomb: { url: 'sprites/bomb.svg', scale: 1.8 }
+      bomb: { url: 'sprites/bomb.svg', scale: 1.8 },
+      hub: { url: 'sprites/hub.svg', scale: 1.4 }
     };
     const iconImages = {}, iconCanvases = {}; // type -> Image / per-color offscreen canvas cache
     for (const [type, props] of Object.entries(specialIcons)) {
@@ -74,7 +75,7 @@
     }
 
     let myId = null, MAP_W = 3000, MAP_H = 2000, CLICK_RANGE = 200;
-    let TICK_RATE = 60, MAGNET_DURATION_MS = 5000;
+    let TICK_RATE = 60, MAGNET_DURATION_MS = 5000, HUB_DURATION_MS = 15000;
     let dots = [], connections = [], stamina = 100, currentTick = 0;
     let camX = 0, camY = 0, zoom = 1, camInitialized = false;
 
@@ -94,6 +95,7 @@
       if (msg.type === 'init') {
         myId = msg.id; MAP_W = msg.MAP_W; MAP_H = msg.MAP_H; CLICK_RANGE = msg.CLICK_RANGE;
         TICK_RATE = msg.TICK_RATE || TICK_RATE; MAGNET_DURATION_MS = msg.MAGNET_DURATION_MS || MAGNET_DURATION_MS;
+        HUB_DURATION_MS = msg.HUB_DURATION_MS || HUB_DURATION_MS;
       }
       else if (msg.type === 'state') { dots = msg.dots; connections = msg.connections; stamina = msg.stamina; currentTick = msg.tick; }
       else if (msg.type === 'click') handleRemoteClick(msg);
@@ -405,14 +407,14 @@
       lastClickX = worldX; lastClickY = worldY;
     }, HOLD_CLICK_INTERVAL);
 
-    function interpolateRGB(r1,g1,b1,r2,g2,b2,t){
-      const v1=[r1,g1,b1];
-      const v2=[r2,g2,b2];
-      let v3=[];
-      for(let i=0; i<3; i++){
-        v3.push(v1[i]*(1-t)+v2[i]*t);
+    function interpolateRGB(r1, g1, b1, r2, g2, b2, t) {
+      const v1 = [r1, g1, b1];
+      const v2 = [r2, g2, b2];
+      let v3 = [];
+      for (let i = 0; i < 3; i++) {
+        v3.push(v1[i] * (1 - t) + v2[i] * t);
       }
-      return "rgb("+v3.join(",")+")";
+      return "rgb(" + v3.join(",") + ")";
     }
 
     function render() {
@@ -482,10 +484,10 @@
       }
 
       // Dots
-      const MAGNET_RING_INNER = 11, MAGNET_RING_OUTER = 14;
+      const PROGRESS_RING_INNER = 11, PROGRESS_RING_OUTER = 14;
       const magnetTotalTicks = Math.max(1, Math.round(MAGNET_DURATION_MS / (1000 / TICK_RATE)));
+      const hubTotalTicks = Math.max(1, Math.round(HUB_DURATION_MS / (1000 / TICK_RATE)));
       for (const d of dots) {
-        const isMagnet = d.special === 'magnet';
         const color = d.owner !== null ? getColor(d.owner) : UNCLAIMED_COLOR;
         const r = d.special ? SPECIAL_DOT_RADIUS : DOT_RADIUS;
 
@@ -507,15 +509,19 @@
         }
 
         // Countdown ring: depletes clockwise from gray to black as the magnet's
-        // active effect (once claimed) runs out.
-        if (isMagnet && d.owner !== null && d.magnetUntil > currentTick) {
-          const remaining = Math.max(0, Math.min(1, (d.magnetUntil - currentTick) / magnetTotalTicks));
+        // or hub's active effect (once claimed) runs out.
+        let untilTick = null, totalTicks = null;
+        if (d.special === 'magnet') { untilTick = d.magnetUntil; totalTicks = magnetTotalTicks; }
+        else if (d.special === 'hub') { untilTick = d.hubUntil; totalTicks = hubTotalTicks; }
+
+        if (untilTick !== null && d.owner !== null && untilTick > currentTick) {
+          const remaining = Math.max(0, Math.min(1, (untilTick - currentTick) / totalTicks));
           const elapsed = 1 - remaining;
           const startAngle = -Math.PI / 2; // 12 o'clock
           const midAngle = startAngle + elapsed * Math.PI * 2;
           const endAngle = startAngle + Math.PI * 2;
-          const midR = (MAGNET_RING_INNER + MAGNET_RING_OUTER) / 2;
-          const ringWidth = MAGNET_RING_OUTER - MAGNET_RING_INNER;
+          const midR = (PROGRESS_RING_INNER + PROGRESS_RING_OUTER) / 2;
+          const ringWidth = PROGRESS_RING_OUTER - PROGRESS_RING_INNER;
 
           ctx.lineWidth = ringWidth;
           if (elapsed > 0) {
@@ -530,13 +536,13 @@
 
         // Bomb countdown: white number in the center showing seconds until detonation.
         if (d.special === 'bomb') {
-          const t=(d.bombDetonateTick - currentTick) / TICK_RATE;
+          const t = (d.bombDetonateTick - currentTick) / TICK_RATE;
           const secsLeft = Math.max(0, Math.ceil(t));
-          ctx.fillStyle = interpolateRGB(200,200,200,255,0,0,Math.exp(-t/5));
+          ctx.fillStyle = interpolateRGB(200, 200, 200, 255, 0, 0, Math.exp(-t / 5));
           ctx.font = 'bold 15px sans-serif';
           ctx.textAlign = 'center';
           ctx.textBaseline = 'middle';
-          ctx.fillText(String(secsLeft), d.x-2, d.y+3);
+          ctx.fillText(String(secsLeft), d.x - 2, d.y + 3);
           ctx.textAlign = 'start';
           ctx.textBaseline = 'alphabetic';
         }
