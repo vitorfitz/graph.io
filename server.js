@@ -204,6 +204,8 @@ function update() {
       const special = maybeSpawnSpecialAt(d.x, d.y);
       if (special) {
         d.special = special.special;
+        d.bombDetonateTick = special.bombDetonateTick;
+        d.magnetUntil = special.magnetUntil;
       }
     }
   }
