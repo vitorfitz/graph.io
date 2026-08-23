@@ -12,7 +12,7 @@ const REPULSION_DECAY = 1;
 // Special dots
 const SPECIAL_DOT_REPULSION_MULT = 1.6;
 const SPECIAL_SPAWN_CHANCE = 1 / 50;
-const MAX_SPECIAL_DOTS = 5;
+const MAX_SPECIAL_DOTS = 10;
 const SPECIAL_TYPE_WEIGHTS = { magnet: 1, bomb: 2, hub: 1 };
 
 // Magnet special dot
@@ -23,7 +23,7 @@ const MAGNET_MAX_SPEED = 6;
 // Hub special dot: once claimed, connects to every dot (regardless of owner)
 // within HUB_RADIUS, for a fixed duration.
 const HUB_DURATION_MS = 15000;
-const HUB_RADIUS = 250;
+const HUB_RADIUS = 500;
 
 // Bomb special dot
 const BOMB_MIN_FUSE_MS = 30000, BOMB_MAX_FUSE_MS = 30000;
