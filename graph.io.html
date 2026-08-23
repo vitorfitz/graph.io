@@ -40,11 +40,14 @@
     const TRAIL_ANIM_DURATION = 1000;
 
     // Special dot icons: recolored per-frame to match owner (or unclaimed color)
-    const specialIcons = { magnet: 'sprites/magnet.svg', bomb: 'sprites/bomb.svg' };
+    const specialIcons = {
+      magnet: { url: 'sprites/magnet.svg', scale: 1.4 },
+      bomb: { url: 'sprites/bomb.svg', scale: 2 }
+    };
     const iconImages = {}, iconCanvases = {}; // type -> Image / per-color offscreen canvas cache
-    for (const [type, src] of Object.entries(specialIcons)) {
+    for (const [type, props] of Object.entries(specialIcons)) {
       const img = new Image();
-      img.src = src;
+      img.src = props.url;
       iconImages[type] = img;
       iconCanvases[type] = {}; // colorKey -> offscreen canvas
     }
@@ -472,13 +475,14 @@
       const MAGNET_RING_INNER = 11, MAGNET_RING_OUTER = 14;
       const magnetTotalTicks = Math.max(1, Math.round(MAGNET_DURATION_MS / (1000 / TICK_RATE)));
       for (const d of dots) {
+        const isMagnet = d.special === 'magnet';
         const color = d.owner !== null ? getColor(d.owner) : UNCLAIMED_COLOR;
         const r = d.special ? SPECIAL_DOT_RADIUS : DOT_RADIUS;
 
         if (d.special && iconImages[d.special]) {
           const icon = getColoredIcon(d.special, '#000000');
           if (icon) {
-            const size = r * 1.4;
+            const size = r * specialIcons[d.special].scale;
             ctx.fillStyle = color;
             ctx.beginPath(); ctx.arc(d.x, d.y, r, 0, Math.PI * 2); ctx.fill();
             ctx.drawImage(icon, d.x - size / 2, d.y - size / 2, size, size);
