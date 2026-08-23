@@ -15,7 +15,7 @@ const SPECIAL_SPAWN_CHANCE = 1 / 50;
 const MAX_SPECIAL_DOTS = 5;
 
 // Magnet special dot
-const MAGNET_DURATION_MS = 5000;
+const MAGNET_DURATION_MS = 3000;
 const MAGNET_ACCEL = 0.2;
 const MAGNET_MAX_SPEED = 6;
 
@@ -359,8 +359,8 @@ function update() {
   }
 
   for (const [id, player] of players) {
-    if (!player.holding) player.stamina = Math.min(MAX_STAMINA, player.stamina + (MAX_STAMINA - player.stamina) * 0.1);
-    else player.holding = false;
+    player.stamina = Math.min(MAX_STAMINA, player.stamina + (MAX_STAMINA - player.stamina) * 0.1);
+    player.holding = false;
 
     if (!dots.some(d => d.owner === id)) respawnPlayer(id);
     if (player.ws.readyState === WebSocket.OPEN) {
