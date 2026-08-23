@@ -42,7 +42,7 @@
     // Special dot icons: recolored per-frame to match owner (or unclaimed color)
     const specialIcons = {
       magnet: { url: 'sprites/magnet.svg', scale: 1.4 },
-      bomb: { url: 'sprites/bomb.svg', scale: 2 }
+      bomb: { url: 'sprites/bomb.svg', scale: 1.8 }
     };
     const iconImages = {}, iconCanvases = {}; // type -> Image / per-color offscreen canvas cache
     for (const [type, props] of Object.entries(specialIcons)) {
@@ -405,6 +405,16 @@
       lastClickX = worldX; lastClickY = worldY;
     }, HOLD_CLICK_INTERVAL);
 
+    function interpolateRGB(r1,g1,b1,r2,g2,b2,t){
+      const v1=[r1,g1,b1];
+      const v2=[r2,g2,b2];
+      let v3=[];
+      for(let i=0; i<3; i++){
+        v3.push(v1[i]*(1-t)+v2[i]*t);
+      }
+      return "rgb("+v3.join(",")+")";
+    }
+
     function render() {
       const mine = dots.filter(d => d.owner === myId);
 
@@ -520,12 +530,13 @@
 
         // Bomb countdown: white number in the center showing seconds until detonation.
         if (d.special === 'bomb') {
-          const secsLeft = Math.max(0, Math.ceil((d.bombDetonateTick - currentTick) / TICK_RATE));
-          ctx.fillStyle = '#fff';
-          ctx.font = 'bold 11px sans-serif';
+          const t=(d.bombDetonateTick - currentTick) / TICK_RATE;
+          const secsLeft = Math.max(0, Math.ceil(t));
+          ctx.fillStyle = interpolateRGB(200,200,200,255,0,0,Math.exp(-t/5));
+          ctx.font = 'bold 15px sans-serif';
           ctx.textAlign = 'center';
           ctx.textBaseline = 'middle';
-          ctx.fillText(String(secsLeft), d.x, d.y);
+          ctx.fillText(String(secsLeft), d.x-2, d.y+3);
           ctx.textAlign = 'start';
           ctx.textBaseline = 'alphabetic';
         }
