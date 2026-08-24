@@ -2,11 +2,11 @@ const WebSocket = require('ws');
 
 const TICK_RATE = 60;
 const MAP_W = 3000, MAP_H = 3000, DOT_DENSITY = 1 / 20000, BASE_DOTS = MAP_W * MAP_H * DOT_DENSITY;
-const CONNECT_DIST = 60, DISCONNECT_DIST = 60;
+const CONNECT_DIST = 50, DISCONNECT_DIST = 50;
 const SPAWN_DOTS = 5, SPAWN_MARGIN = 200, SPAWN_MIN_DIST = 300, SPAWN_SPREAD = 50;
 const CLICK_RADIUS = 180, CLICK_FORCE = 12, VELOCITY_DECAY = 0.05, CLICK_RANGE = 200;
-const MAX_STAMINA = 100, CLICK_COST = 0, DRAG_COST_PER_DIST = 0.1;
-const MIN_DOT_VEL = 0.66666, MAX_DOT_VEL = 1.33334;
+const MAX_STAMINA = 100, DELTA_V_COST = 0.5;
+const MIN_DOT_VEL = 0.6, MAX_DOT_VEL = 1.2;
 const REPULSION_DECAY = 1;
 
 // Special dots
@@ -179,7 +179,7 @@ function removePlayer(id) {
 function getRepulsion(dist, radiusMult = 1) {
   let f = 0;
   const threshold = 49 * radiusMult;
-  if (dist < threshold) f += Math.min((200 * radiusMult ** 2 / dist**2), 12.5 * radiusMult);
+  if (dist < threshold) f += Math.min((200 * radiusMult ** 2 / dist ** 2), 12.5 * radiusMult);
   return f;
 }
 
@@ -547,15 +547,17 @@ function handleClick(playerId, x, y, px, py) {
     if (id !== playerId && p.ws.readyState === WebSocket.OPEN) p.ws.send(clickMsg);
   }
 
-  // Calculate stamina cost
   player.holding = px !== undefined;
-  let cost = player.holding ? Math.hypot(x - px, y - py) * DRAG_COST_PER_DIST : CLICK_COST;
-  if (player.stamina < cost) cost = player.stamina;
-  player.stamina -= cost;
 
-  // Effectiveness scales with stamina (0.2 to 1.0)
   const effectiveness = 0.4 + 0.6 * Math.sqrt(player.stamina / MAX_STAMINA);
   const radius = CLICK_RADIUS * effectiveness;
+
+  // Stamina cost is based on the total delta-v actually imparted to dots this
+  // click/drag, rather than cursor distance. A clumped formation has many
+  // dots packed within the force radius, so a single click accelerates all
+  // of them at once and drains stamina fast; a spread-out formation only
+  // catches a few dots per click and drains much more slowly.
+  let totalDeltaV = 0;
 
   for (const d of dots) {
     let cx = x, cy = y;
@@ -567,10 +569,17 @@ function handleClick(playerId, x, y, px, py) {
     const dist = Math.hypot(dx, dy);
     if (dist < radius && dist > 0) {
       const force = (1 - dist / radius) * CLICK_FORCE * effectiveness;
-      d.clickVx = addForce(d.clickVx, (dx / dist) * force);
-      d.clickVy = addForce(d.clickVy, (dy / dist) * force);
+      const newVx = addForce(d.clickVx, (dx / dist) * force);
+      const newVy = addForce(d.clickVy, (dy / dist) * force);
+      totalDeltaV += Math.hypot(newVx - d.clickVx, newVy - d.clickVy);
+      d.clickVx = newVx;
+      d.clickVy = newVy;
     }
   }
+
+  let cost = totalDeltaV * DELTA_V_COST;
+  if (player.stamina < cost) cost = player.stamina;
+  player.stamina -= cost;
 }
 
 const wss = new WebSocket.Server({ port: 8080 });
