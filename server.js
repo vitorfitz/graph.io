@@ -2,23 +2,23 @@ const WebSocket = require('ws');
 
 const TICK_RATE = 60;
 const MAP_W = 3000, MAP_H = 3000, DOT_DENSITY = 1 / 20000, BASE_DOTS = MAP_W * MAP_H * DOT_DENSITY;
-const CONNECT_DIST = 50, DISCONNECT_DIST = 50;
+const CONNECT_DIST = 60, DISCONNECT_DIST = 60;
 const SPAWN_DOTS = 5, SPAWN_MARGIN = 200, SPAWN_MIN_DIST = 300, SPAWN_SPREAD = 50;
 const CLICK_RADIUS = 180, CLICK_FORCE = 12, VELOCITY_DECAY = 0.05, CLICK_RANGE = 200;
-const MAX_STAMINA = 100, CLICK_COST = 15, DRAG_COST_PER_DIST = 0.15;
-const MIN_DOT_VEL = 0.5, MAX_DOT_VEL = 1;
+const MAX_STAMINA = 100, CLICK_COST = 0, DRAG_COST_PER_DIST = 0.1;
+const MIN_DOT_VEL = 0.66666, MAX_DOT_VEL = 1.33334;
 const REPULSION_DECAY = 1;
 
 // Special dots
 const SPECIAL_DOT_REPULSION_MULT = 1.6;
-const SPECIAL_SPAWN_CHANCE = 1 / 25;
-const MAX_SPECIAL_DOTS = 10;
-const SPECIAL_TYPE_WEIGHTS = { magnet: 1, bomb: 4, hub: 1, star: 1, spawner: 1 };
+const SPECIAL_SPAWN_CHANCE = 1 / 20;
+const MAX_SPECIAL_DOTS = 15;
+const SPECIAL_TYPE_WEIGHTS = { magnet: 1, bomb: 3, hub: 0, star: 1, spawner: 1 };
 
 // Magnet special dot
 const MAGNET_DURATION_MS = 3000;
-const MAGNET_ACCEL = 0.2;
-const MAGNET_MAX_SPEED = 6;
+const MAGNET_ACCEL = 0.166667;
+const MAGNET_MAX_SPEED = 5;
 
 // Hub special dot: once claimed, connects to every dot (regardless of owner)
 // within HUB_RADIUS, for a fixed duration.
@@ -26,13 +26,13 @@ const HUB_DURATION_MS = 10000;
 const HUB_RADIUS = 400;
 
 // Bomb special dot
-const BOMB_MIN_FUSE_MS = 10000, BOMB_MAX_FUSE_MS = 20000;
+const BOMB_MIN_FUSE_MS = 15000, BOMB_MAX_FUSE_MS = 30000;
 const BOMB_RADIUS = 600, BOMB_FORCE = 40;
 
 // Star special dot: once claimed, fixes the claiming player's stamina at a
 // constant value for a fixed duration.
-const STAR_DURATION_MS = 7000;
-const STAR_STAMINA = 150;
+const STAR_DURATION_MS = 10000;
+const STAR_STAMINA = 200;
 
 // Spawner special dot: once claimed, spawns a fixed number of new dots
 // (owned by the claiming player) around itself over a fixed duration
@@ -179,7 +179,7 @@ function removePlayer(id) {
 function getRepulsion(dist, radiusMult = 1) {
   let f = 0;
   const threshold = 49 * radiusMult;
-  if (dist < threshold) f += Math.min((100 * radiusMult ** 2 / dist ** 2), 10 * radiusMult);
+  if (dist < threshold) f += Math.min((200 * radiusMult ** 2 / dist**2), 12.5 * radiusMult);
   return f;
 }
 
